@@ -1,4 +1,11 @@
 from .zch_e2ee import (
+    # Excepciones
+    CriptoError,
+    ErrorDescifrado,
+    ErrorFirma,
+    ErrorClave,
+    
+    # RSA
     generar_llaves,
     serializar_llave_privada,
     serializar_llave_publica,
@@ -14,19 +21,48 @@ from .zch_e2ee import (
     cargar_llave_publica_desde_archivo,
     encriptar_archivo_e2ee,
     desencriptar_archivo_e2ee,
-    generar_llaves_ec,
-    derivar_clave_compartida,
-    encriptar_con_password,
-    desencriptar_con_password,
     encriptar_y_firmar_e2ee,
     desencriptar_y_verificar_e2ee,
-    encriptar_archivo_con_password,
-    desencriptar_archivo_con_password,
-    calcular_sha256,
-    firmar_archivo,
-    verificar_firma_archivo,
     encriptar_y_firmar_archivo_e2ee,
     desencriptar_y_verificar_archivo_e2ee,
     encriptar_directorio_e2ee,
-    desencriptar_directorio_e2ee
+    desencriptar_directorio_e2ee,
+    
+    # EC (Curvas Elípticas X25519 / Ed25519)
+    generar_llaves_ec,
+    derivar_clave_compartida,
+    generar_llaves_ed25519,
+    firmar_mensaje_ed25519,
+    verificar_firma_ed25519,
+    serializar_llave_privada_ec,
+    serializar_llave_publica_ec,
+    cargar_llave_privada_ec,
+    cargar_llave_publica_ec,
+    guardar_llave_privada_ec_en_archivo,
+    guardar_llave_publica_ec_en_archivo,
+    cargar_llave_privada_ec_desde_archivo,
+    cargar_llave_publica_ec_desde_archivo,
+    encriptar_e2ee_ec,
+    desencriptar_e2ee_ec,
+    encriptar_y_firmar_e2ee_ec,
+    desencriptar_y_verificar_e2ee_ec,
+    encriptar_archivo_e2ee_ec,
+    desencriptar_archivo_e2ee_ec,
+    encriptar_y_firmar_archivo_e2ee_ec,
+    desencriptar_y_verificar_archivo_e2ee_ec,
+    encriptar_directorio_e2ee_ec,
+    desencriptar_directorio_e2ee_ec,
+    
+    # Password (Simétrico)
+    encriptar_con_password,
+    desencriptar_con_password,
+    encriptar_archivo_con_password,
+    desencriptar_archivo_con_password,
+    encriptar_directorio_con_password,
+    desencriptar_directorio_con_password,
+    
+    # Auxiliares
+    calcular_sha256,
+    firmar_archivo,
+    verificar_firma_archivo
 )
