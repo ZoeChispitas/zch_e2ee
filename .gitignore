@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# PyPI Build and distribution folders
+build/
+dist/
+src/*.egg-info/
+.eggs/
+
+# Sensitive data and API tokens
+token/
+token
+
+# Cryptographic Keys (private/public files generated in tests)
+*.pem
+
+# Test generated text files
+secreto.txt
+secreto.enc
+secreto_descifrado.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
