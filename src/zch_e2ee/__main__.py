@@ -35,10 +35,11 @@ def menu_interactivo():
         print("  8. 🧩 Dividir un secreto (Esquema de Shamir)")
         print("  9. 🤝 Reconstruir un secreto desde sus partes")
         print("  10.🛡️  Cifrar un módulo Python (.py -> .py.enc)")
-        print("  11.🚪 Salir")
+        print("  11.🗃️  Gestionar llavero criptográfico (Keystore)")
+        print("  12.🚪 Salir")
         print("=" * 70)
         
-        opcion = input("Selecciona una opción (1-11): ").strip()
+        opcion = input("Selecciona una opción (1-12): ").strip()
         
         if opcion == "1":
             print("\n--- Generar Llaves ---")
@@ -282,13 +283,107 @@ def menu_interactivo():
                 imprimir_error(f"Fallo al cifrar módulo: {e}")
                 
         elif opcion == "11":
+            print("\n--- Gestionar Llavero Criptográfico (Keystore) ---")
+            print("  a. Crear un llavero vacío (.json)")
+            print("  b. Listar alias en un llavero")
+            print("  c. Agregar una clave (.pem) al llavero")
+            print("  d. Exportar una clave a un archivo (.pem)")
+            sub_opc = input("Selecciona una opción (a/b/c/d): ").strip().lower()
+            
+            if sub_opc == "a":
+                ruta_ks = input("Ruta del nuevo llavero (ej: llavero.json): ").strip()
+                pwd = input("Contraseña maestra del llavero: ").strip()
+                try:
+                    zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd)
+                    imprimir_exito(f"Llavero creado en '{ruta_ks}'.")
+                except Exception as e:
+                    imprimir_error(f"Error al crear llavero: {e}")
+                    
+            elif sub_opc == "b":
+                ruta_ks = input("Ruta del llavero: ").strip()
+                pwd = input("Contraseña maestra: ").strip()
+                try:
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
+                    aliases = ks.listar_alias()
+                    print("\n🔐 --- ALIAS EN LLAVERO ---")
+                    print("🔑 Claves Privadas Propias:")
+                    for a in aliases["claves_privadas"]:
+                        print(f"  - {a}")
+                    print("\n👤 Claves Públicas de Contactos:")
+                    for a in aliases["claves_publicas"]:
+                        print(f"  - {a}")
+                    imprimir_exito("Alias listados correctamente.")
+                except Exception as e:
+                    imprimir_error(f"Error al listar: {e}")
+                    
+            elif sub_opc == "c":
+                ruta_ks = input("Ruta del llavero: ").strip()
+                pwd = input("Contraseña maestra: ").strip()
+                alias = input("Alias para registrar la clave: ").strip()
+                ruta_key = input("Ruta del archivo PEM de la clave: ").strip()
+                tipo = input("¿Es clave pública (u) o privada (r)?: ").strip().lower()
+                
+                try:
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
+                    with open(ruta_key, 'r', encoding='utf-8') as f:
+                        pem_str = f.read()
+                        
+                    if tipo == "r":
+                        pwd_pem = input("Contraseña de la clave privada PEM (Enter si no tiene): ").strip() or None
+                        try:
+                            clave = zch_e2ee.cargar_llave_privada_ec(pem_str, pwd_pem)
+                        except Exception:
+                            clave = zch_e2ee.cargar_llave_privada(pem_str, pwd_pem)
+                        ks.guardar_clave_propia(alias, clave)
+                    else:
+                        try:
+                            clave = zch_e2ee.cargar_llave_publica_ec(pem_str)
+                        except Exception:
+                            clave = zch_e2ee.cargar_llave_publica(pem_str)
+                        ks.guardar_clave_contacto(alias, clave)
+                        
+                    ks.guardar(ruta_ks, pwd)
+                    imprimir_exito(f"Clave guardada bajo el alias '{alias}'.")
+                except Exception as e:
+                    imprimir_error(f"Error al agregar clave: {e}")
+                    
+            elif sub_opc == "d":
+                ruta_ks = input("Ruta del llavero: ").strip()
+                pwd = input("Contraseña maestra: ").strip()
+                alias = input("Alias de la clave a exportar: ").strip()
+                ruta_dest = input("Ruta de destino del archivo PEM: ").strip()
+                tipo = input("¿Es clave pública (u) o privada (r)?: ").strip().lower()
+                
+                try:
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
+                    if tipo == "r":
+                        clave = ks.obtener_clave_privada(alias)
+                        pwd_pem = input("Contraseña para cifrar el archivo PEM (Enter para no cifrar): ").strip() or None
+                        try:
+                            zch_e2ee.guardar_llave_privada_ec_en_archivo(clave, ruta_dest, pwd_pem)
+                        except Exception:
+                            zch_e2ee.guardar_llave_privada_en_archivo(clave, ruta_dest, pwd_pem)
+                    else:
+                        clave = ks.obtener_clave_contacto(alias)
+                        try:
+                            zch_e2ee.guardar_llave_publica_ec_en_archivo(clave, ruta_dest)
+                        except Exception:
+                            zch_e2ee.guardar_llave_publica_en_archivo(clave, ruta_dest)
+                            
+                    imprimir_exito(f"Clave '{alias}' exportada con éxito en '{ruta_dest}'.")
+                except Exception as e:
+                    imprimir_error(f"Error al exportar: {e}")
+            else:
+                imprimir_error("Opción de submenú inválida.")
+                
+        elif opcion == "12":
             print("\n¡Hasta luego! Mantente seguro. 🔒")
             break
         else:
             imprimir_error("Opción inválida.")
 
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.1 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.2 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -331,6 +426,34 @@ def main():
     sub_mod.add_argument("--in-py", required=True, help="Ruta del archivo de código .py")
     sub_mod.add_argument("--out-enc", required=True, help="Ruta de guardado .py.enc")
     sub_mod.add_argument("--password", required=True, help="Contraseña para importar el módulo")
+
+    # keystore-create
+    sub_ks_create = subparsers.add_parser("keystore-create", help="Crear un llavero criptográfico vacío (.json)")
+    sub_ks_create.add_argument("--keystore", required=True, help="Ruta de guardado del llavero")
+    sub_ks_create.add_argument("--password", required=True, help="Contraseña maestra del llavero")
+
+    # keystore-list
+    sub_ks_list = subparsers.add_parser("keystore-list", help="Listar los alias guardados en el llavero")
+    sub_ks_list.add_argument("--keystore", required=True, help="Ruta del llavero")
+    sub_ks_list.add_argument("--password", required=True, help="Contraseña maestra del llavero")
+
+    # keystore-add-key
+    sub_ks_add = subparsers.add_parser("keystore-add-key", help="Agregar una llave pública o privada al llavero")
+    sub_ks_add.add_argument("--keystore", required=True, help="Ruta del llavero")
+    sub_ks_add.add_argument("--password", required=True, help="Contraseña maestra del llavero")
+    sub_ks_add.add_argument("--alias", required=True, help="Alias identificador de la llave")
+    sub_ks_add.add_argument("--key-file", required=True, help="Ruta del archivo PEM de la llave")
+    sub_ks_add.add_argument("--type", choices=["private", "public"], required=True, help="Especificar si es clave pública o privada")
+    sub_ks_add.add_argument("--key-password", help="Contraseña opcional si la clave privada PEM está cifrada")
+
+    # keystore-export-key
+    sub_ks_export = subparsers.add_parser("keystore-export-key", help="Exportar una llave del llavero a un archivo PEM")
+    sub_ks_export.add_argument("--keystore", required=True, help="Ruta del llavero")
+    sub_ks_export.add_argument("--password", required=True, help="Contraseña maestra del llavero")
+    sub_ks_export.add_argument("--alias", required=True, help="Alias de la llave a exportar")
+    sub_ks_export.add_argument("--out-pem", required=True, help="Ruta del archivo PEM de destino")
+    sub_ks_export.add_argument("--type", choices=["private", "public"], required=True, help="Especificar si es clave pública o privada")
+    sub_ks_export.add_argument("--key-password", help="Contraseña opcional para cifrar la clave privada PEM exportada")
 
     # interactive
     subparsers.add_parser("interactive", help="Lanza el menú interactivo con formato de consola")
@@ -469,6 +592,77 @@ def main():
             imprimir_exito(f"Módulo Python cifrado.", args.json, {"out_enc": args.out_enc})
         except Exception as e:
             imprimir_error(f"Fallo al cifrar módulo: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-create":
+        try:
+            zch_e2ee.KeystoreZCH.crear(args.keystore, args.password)
+            imprimir_exito(f"Llavero creado correctamente en '{args.keystore}'.", args.json, {"keystore": args.keystore})
+        except Exception as e:
+            imprimir_error(f"Fallo al crear llavero: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-list":
+        try:
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            aliases = ks.listar_alias()
+            imprimir_exito("Alias del llavero recuperados.", args.json, {"aliases": aliases})
+            if not args.json:
+                print("\n🔐 --- ALIAS EN LLAVERO ---")
+                print("🔑 Claves Privadas Propias:")
+                for a in aliases["claves_privadas"]:
+                    print(f"  - {a}")
+                print("\n👤 Claves Públicas de Contactos:")
+                for a in aliases["claves_publicas"]:
+                    print(f"  - {a}")
+        except Exception as e:
+            imprimir_error(f"Fallo al listar llavero: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-add-key":
+        try:
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            with open(args.key_file, 'r', encoding='utf-8') as f:
+                pem_str = f.read()
+                
+            if args.type == "private":
+                try:
+                    clave = zch_e2ee.cargar_llave_privada_ec(pem_str, args.key_password)
+                except Exception:
+                    clave = zch_e2ee.cargar_llave_privada(pem_str, args.key_password)
+                ks.guardar_clave_propia(args.alias, clave)
+            else:
+                try:
+                    clave = zch_e2ee.cargar_llave_publica_ec(pem_str)
+                except Exception:
+                    clave = zch_e2ee.cargar_llave_publica(pem_str)
+                ks.guardar_clave_contacto(args.alias, clave)
+                
+            ks.guardar(args.keystore, args.password)
+            imprimir_exito(f"Clave guardada en llavero bajo el alias '{args.alias}'.", args.json, {"alias": args.alias})
+        except Exception as e:
+            imprimir_error(f"Fallo al agregar clave: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-export-key":
+        try:
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            if args.type == "private":
+                clave = ks.obtener_clave_privada(args.alias)
+                try:
+                    zch_e2ee.guardar_llave_privada_ec_en_archivo(clave, args.out_pem, args.key_password)
+                except Exception:
+                    zch_e2ee.guardar_llave_privada_en_archivo(clave, args.out_pem, args.key_password)
+            else:
+                clave = ks.obtener_clave_contacto(args.alias)
+                try:
+                    zch_e2ee.guardar_llave_publica_ec_en_archivo(clave, args.out_pem)
+                except Exception:
+                    zch_e2ee.guardar_llave_publica_en_archivo(clave, args.out_pem)
+                    
+            imprimir_exito(f"Clave '{args.alias}' exportada con éxito en '{args.out_pem}'.", args.json, {"alias": args.alias, "out_pem": args.out_pem})
+        except Exception as e:
+            imprimir_error(f"Fallo al exportar clave: {e}", args.json)
             sys.exit(1)
 
 if __name__ == "__main__":

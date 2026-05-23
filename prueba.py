@@ -1,4 +1,6 @@
+import sys
 import os
+sys.path.insert(0, os.path.abspath('src'))
 import shutil
 import base64
 import zch_e2ee
@@ -916,12 +918,114 @@ def test_shamir_optimizado_stress():
     print(f"  [OK] 50 operaciones completas de Shamir realizadas en {(t1 - t0)*1000:.2f} ms.")
 
 # =====================================================================
+# NOVEDADES DE LA VERSIÓN 1.0.2
+# =====================================================================
+
+def test_keystore_cli():
+    print("\n--- TEST: Comandos CLI de Llavero Criptográfico (v1.0.2) ---")
+    import subprocess
+    import sys
+    import json
+    
+    ruta_ks = "cli_keystore.json"
+    pwd = "CliMasterPassword123!"
+    
+    # Limpiar previos
+    for f in [ruta_ks, "exported_pub.pem", "exported_priv.pem", "test_priv.pem", "test_pub.pem"]:
+        if os.path.exists(f):
+            os.remove(f)
+            
+    # 1. Generar llaves auxiliares para las pruebas en disco
+    priv, pub = zch_e2ee.generar_llaves_ec()
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv, "test_priv.pem", "keypwd")
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub, "test_pub.pem")
+    
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    try:
+        # 2. Ejecutar keystore-create vía subprocess
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-create",
+            "--keystore", ruta_ks, "--password", pwd
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        assert os.path.exists(ruta_ks)
+        print("  [OK] keystore-create ejecutado con éxito.")
+        
+        # 3. Ejecutar keystore-add-key (clave privada)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-add-key",
+            "--keystore", ruta_ks, "--password", pwd,
+            "--alias", "identidad_priv", "--key-file", "test_priv.pem",
+            "--type", "private", "--key-password", "keypwd"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        print("  [OK] keystore-add-key (private) ejecutado con éxito.")
+ 
+        # 4. Ejecutar keystore-add-key (clave pública)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-add-key",
+            "--keystore", ruta_ks, "--password", pwd,
+            "--alias", "contacto_pub", "--key-file", "test_pub.pem",
+            "--type", "public"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        print("  [OK] keystore-add-key (public) ejecutado con éxito.")
+ 
+        # 5. Ejecutar keystore-list
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-list",
+            "--keystore", ruta_ks, "--password", pwd
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        aliases = out_data["aliases"]
+        assert "identidad_priv" in aliases["claves_privadas"]
+        assert "contacto_pub" in aliases["claves_publicas"]
+        print("  [OK] keystore-list ejecutado con éxito.")
+ 
+        # 6. Ejecutar keystore-export-key (clave pública)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-export-key",
+            "--keystore", ruta_ks, "--password", pwd,
+            "--alias", "contacto_pub", "--out-pem", "exported_pub.pem",
+            "--type", "public"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        assert os.path.exists("exported_pub.pem")
+        print("  [OK] keystore-export-key (public) ejecutado con éxito.")
+        
+        # 7. Ejecutar keystore-export-key (clave privada)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-export-key",
+            "--keystore", ruta_ks, "--password", pwd,
+            "--alias", "identidad_priv", "--out-pem", "exported_priv.pem",
+            "--type", "private", "--key-password", "keypwd_new"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        assert os.path.exists("exported_priv.pem")
+        print("  [OK] keystore-export-key (private) ejecutado con éxito.")
+        
+    finally:
+        # Limpieza
+        for f in [ruta_ks, "exported_pub.pem", "exported_priv.pem", "test_priv.pem", "test_pub.pem"]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de Keystore CLI completadas con éxito.")
+
+# =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.1")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.2")
     print("=" * 75)
     
     # Importación local para test de Keystore
@@ -966,7 +1070,10 @@ def main():
         test_keystore_listar_alias()
         test_shamir_optimizado_stress()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.1 PASARON EXITOSAMENTE!")
+        # Tests v1.0.2
+        test_keystore_cli()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.2 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
