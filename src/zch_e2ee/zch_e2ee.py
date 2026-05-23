@@ -1,7 +1,7 @@
 import os
 import zlib
 import base64
-from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519, utils
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -486,4 +486,145 @@ def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, passw
     
     with open(ruta_destino, 'wb') as f:
         f.write(datos_originales)
+
+def calcular_sha256(ruta_archivo: str) -> str:
+    """
+    Calcula el hash SHA-256 de cualquier archivo leyéndolo en bloques de 4KB.
+    Retorna el hash en formato hexadecimal.
+    """
+    sha256_hash = hashes.Hash(hashes.SHA256())
+    with open(ruta_archivo, "rb") as f:
+        for bloque_bytes in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(bloque_bytes)
+    return sha256_hash.finalize().hex()
+
+def firmar_archivo(ruta_archivo: str, clave_privada_emisor) -> str:
+    """
+    Calcula el hash SHA-256 de un archivo y lo firma digitalmente con la clave privada del emisor.
+    Retorna la firma codificada en Base64.
+    """
+    hash_bytes = bytes.fromhex(calcular_sha256(ruta_archivo))
+    
+    firma = clave_privada_emisor.sign(
+        hash_bytes,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        utils.Prehashed(hashes.SHA256())
+    )
+    return base64.b64encode(firma).decode('utf-8')
+
+def verificar_firma_archivo(ruta_archivo: str, firma_b64: str, clave_publica_emisor) -> bool:
+    """
+    Verifica la firma digital de un archivo usando la llave pública del emisor.
+    Retorna True si la firma es legítima y el archivo no ha sido alterado, False en caso contrario.
+    """
+    try:
+        hash_bytes = bytes.fromhex(calcular_sha256(ruta_archivo))
+        firma = base64.b64decode(firma_b64.encode('utf-8'))
+        
+        clave_publica_emisor.verify(
+            firma,
+            hash_bytes,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            utils.Prehashed(hashes.SHA256())
+        )
+        return True
+    except Exception:
+        return False
+
+def encriptar_y_firmar_archivo_e2ee(ruta_origen: str, ruta_destino: str, clave_publica_destinatario, clave_privada_emisor):
+    """
+    Encripta un archivo completo para el destinatario (E2EE híbrido) y firma digitalmente
+    el archivo cifrado resultante usando la clave privada del emisor.
+    Escribe el paquete final binario: [firma (256 bytes)] + [paquete_cifrado]
+    """
+    # 1. Encriptar el archivo en la ruta de destino
+    encriptar_archivo_e2ee(ruta_origen, ruta_destino, clave_publica_destinatario)
+    
+    # 2. Leer los datos cifrados recién generados
+    with open(ruta_destino, 'rb') as f:
+        datos_cifrados = f.read()
+        
+    # 3. Firmar los datos cifrados (Encrypt-then-Sign)
+    hash_bytes = hashes.Hash(hashes.SHA256())
+    hash_bytes.update(datos_cifrados)
+    digest = hash_bytes.finalize()
+    
+    firma = clave_privada_emisor.sign(
+        digest,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        utils.Prehashed(hashes.SHA256())
+    )
+    
+    # 4. Escribir el archivo final combinando firma y datos cifrados
+    with open(ruta_destino, 'wb') as f:
+        f.write(firma + datos_cifrados)
+
+def desencriptar_y_verificar_archivo_e2ee(ruta_origen: str, ruta_destino: str, clave_privada_destinatario, clave_publica_emisor) -> bool:
+    """
+    Descifra un archivo y valida si la firma digital del emisor es legítima.
+    Escribe el archivo desencriptado resultante en la ruta de destino.
+    Retorna True si la firma es válida, False en caso contrario (aun si la firma es inválida, el archivo se descifra).
+    """
+    with open(ruta_origen, 'rb') as f:
+        paquete_final = f.read()
+        
+    tamanio_firma = 256 # Firma RSA-2048
+    
+    # 1. Extraer componentes
+    firma = paquete_final[:tamanio_firma]
+    paquete_cifrado_bytes = paquete_final[tamanio_firma:]
+    
+    # 2. Verificar la firma del emisor contra el texto cifrado
+    try:
+        hash_bytes = hashes.Hash(hashes.SHA256())
+        hash_bytes.update(paquete_cifrado_bytes)
+        digest = hash_bytes.finalize()
+        
+        clave_publica_emisor.verify(
+            firma,
+            digest,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            utils.Prehashed(hashes.SHA256())
+        )
+        firma_valida = True
+    except Exception:
+        firma_valida = False
+        
+    # 3. Descifrar el paquete cifrado
+    tamanio_rsa_key = 256
+    tamanio_nonce = 12
+    
+    clave_aes_encriptada = paquete_cifrado_bytes[:tamanio_rsa_key]
+    nonce = paquete_cifrado_bytes[tamanio_rsa_key : tamanio_rsa_key + tamanio_nonce]
+    datos_cifrados = paquete_cifrado_bytes[tamanio_rsa_key + tamanio_nonce:]
+    
+    clave_aes = clave_privada_destinatario.decrypt(
+        clave_aes_encriptada,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    
+    aesgcm = AESGCM(clave_aes)
+    datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+    datos_originales = zlib.decompress(datos_comprimidos)
+    
+    with open(ruta_destino, 'wb') as f:
+        f.write(datos_originales)
+        
+    return firma_valida
 

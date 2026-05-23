@@ -21,5 +21,10 @@ from .zch_e2ee import (
     encriptar_y_firmar_e2ee,
     desencriptar_y_verificar_e2ee,
     encriptar_archivo_con_password,
-    desencriptar_archivo_con_password
+    desencriptar_archivo_con_password,
+    calcular_sha256,
+    firmar_archivo,
+    verificar_firma_archivo,
+    encriptar_y_firmar_archivo_e2ee,
+    desencriptar_y_verificar_archivo_e2ee
 )

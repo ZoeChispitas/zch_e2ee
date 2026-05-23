@@ -95,9 +95,78 @@ def test_archivo_password():
             os.remove(archivo)
     print("  [OK] Test completado con exito.")
 
+def test_firma_archivo_y_checksum():
+    print("\n--- TEST: Checksum SHA-256 y Firmas Digitales de Archivos ---")
+    privada, publica = zch_e2ee.generar_llaves()
+    
+    archivo_prueba = "archivo_prueba_firma.txt"
+    contenido = "Este archivo sera firmado digitalmente por Zoe CH."
+    with open(archivo_prueba, "w", encoding="utf-8") as f:
+        f.write(contenido)
+        
+    # Calcular hash
+    hash_hex = zch_e2ee.calcular_sha256(archivo_prueba)
+    print(f"  SHA-256: {hash_hex}")
+    
+    # Firmar archivo
+    firma = zch_e2ee.firmar_archivo(archivo_prueba, privada)
+    print(f"  Firma digital del archivo (Base64): {firma[:50]}...")
+    
+    # Verificar firma
+    valida = zch_e2ee.verificar_firma_archivo(archivo_prueba, firma, publica)
+    print(f"  Firma valida: {valida}")
+    
+    assert valida, "La firma del archivo debio ser valida."
+    
+    # Simular alteración del archivo
+    with open(archivo_prueba, "w", encoding="utf-8") as f:
+        f.write(contenido + " modificado")
+        
+    valida_alterado = zch_e2ee.verificar_firma_archivo(archivo_prueba, firma, publica)
+    print(f"  Firma tras alteracion: {valida_alterado}")
+    assert not valida_alterado, "La firma debio ser invalida tras alterar el archivo."
+    
+    # Limpiar
+    if os.path.exists(archivo_prueba):
+        os.remove(archivo_prueba)
+    print("  [OK] Test completado con exito.")
+
+def test_archivo_cifrado_firmado():
+    print("\n--- TEST: Cifrado + Firma Combinados para Archivos (E2EE) ---")
+    privada_alice, publica_alice = zch_e2ee.generar_llaves()
+    privada_bob, publica_bob = zch_e2ee.generar_llaves()
+    
+    archivo_origen = "documento_secreto.txt"
+    archivo_cifrado = "documento_secreto.enc"
+    archivo_descifrado = "documento_secreto_descifrado.txt"
+    
+    contenido = "Transferencia de archivos segura, cifrada para Bob y firmada por Alice."
+    with open(archivo_origen, "w", encoding="utf-8") as f:
+        f.write(contenido)
+        
+    # Cifrar y firmar
+    zch_e2ee.encriptar_y_firmar_archivo_e2ee(archivo_origen, archivo_cifrado, publica_bob, privada_alice)
+    print(f"  Archivo cifrado y firmado creado: '{archivo_cifrado}'")
+    
+    # Descifrar y verificar
+    firma_valida = zch_e2ee.desencriptar_y_verificar_archivo_e2ee(archivo_cifrado, archivo_descifrado, privada_bob, publica_alice)
+    with open(archivo_descifrado, "r", encoding="utf-8") as f:
+        descifrado = f.read()
+    print(f"  Archivo descifrado recuperado: '{descifrado}'")
+    print(f"  Firma autentica: {firma_valida}")
+    
+    assert contenido == descifrado, "El archivo descifrado no coincide."
+    assert firma_valida, "La firma del archivo cifrado debio ser valida."
+    
+    # Limpiar
+    for archivo in [archivo_origen, archivo_cifrado, archivo_descifrado]:
+        if os.path.exists(archivo):
+            os.remove(archivo)
+    print("  [OK] Test completado con exito.")
+
 def main():
     print("=" * 70)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.5.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.6.0")
     print("=" * 70)
     
     try:
@@ -105,6 +174,8 @@ def main():
         test_encriptacion_firmada()
         test_archivos()
         test_archivo_password()
+        test_firma_archivo_y_checksum()
+        test_archivo_cifrado_firmado()
         print("\n[OK] ¡TODOS LOS TESTS PASARON EXITOSAMENTE!")
     except AssertionError as e:
         print(f"\n[ERROR] Fallo en la validacion: {e}")
