@@ -1,5 +1,6 @@
 import os
 import shutil
+import base64
 import zch_e2ee
 
 def test_cifrado_password():
@@ -604,13 +605,275 @@ def test_archivo_multi():
     print("  [OK] Test de archivos multi-destinatario completado con éxito.")
 
 # =====================================================================
+# NOVEDADES DE LA VERSIÓN 1.0.0
+# =====================================================================
+
+def test_shamir_secret_sharing():
+    print("\n--- TEST: Esquema de Secreto Compartido de Shamir (SSS) ---")
+    secreto = b"Este es un secreto confidencial de Zoe"
+    
+    # Dividir secreto (umbral 3 de 5)
+    partes = zch_e2ee.dividir_secreto_shamir(secreto, n=5, t=3)
+    assert len(partes) == 5, "Debió generar 5 partes."
+    
+    # Intentar reconstruir con 3 partes (suficiente)
+    secreto_reconstruido_3 = zch_e2ee.reconstruir_secreto_shamir(partes[:3])
+    assert secreto_reconstruido_3 == secreto, "La reconstrucción con 3 partes falló."
+    
+    # Intentar reconstruir con 4 partes (suficiente)
+    secreto_reconstruido_4 = zch_e2ee.reconstruir_secreto_shamir(partes[1:5])
+    assert secreto_reconstruido_4 == secreto, "La reconstrucción con 4 partes falló."
+    
+    # Intentar reconstruir con 2 partes (insuficiente, no debe dar el secreto correcto)
+    secreto_reconstruido_2 = zch_e2ee.reconstruir_secreto_shamir(partes[:2])
+    assert secreto_reconstruido_2 != secreto, "La reconstrucción con menos de T partes debió fallar o dar datos incorrectos."
+    
+    # Validar control de errores
+    try:
+        zch_e2ee.dividir_secreto_shamir(secreto, n=5, t=6)
+        assert False, "Debió fallar porque t > n."
+    except ValueError:
+        pass
+        
+    try:
+        zch_e2ee.dividir_secreto_shamir(secreto, n=300, t=3)
+        assert False, "Debió fallar porque n > 255."
+    except ValueError:
+        pass
+        
+    print("  [OK] Esquema de Shamir validado correctamente.")
+
+def test_keystore_zch():
+    print("\n--- TEST: Llavero Criptográfico Seguro (KeystoreZCH) ---")
+    ruta_keystore = "temp_keystore.json"
+    pwd_maestro = "MasterZchKey99!"
+    
+    if os.path.exists(ruta_keystore):
+        os.remove(ruta_keystore)
+        
+    # Crear Keystore
+    ks = zch_e2ee.KeystoreZCH.crear(ruta_keystore, pwd_maestro)
+    
+    # Generar claves para guardar
+    priv_rsa, pub_rsa = zch_e2ee.generar_llaves()
+    priv_ec, pub_ec = zch_e2ee.generar_llaves_ec()
+    
+    # Guardar claves
+    ks.guardar_clave_propia("mi_rsa", priv_rsa)
+    ks.guardar_clave_contacto("contacto_rsa", pub_rsa)
+    ks.guardar_clave_propia("mi_ec", priv_ec)
+    ks.guardar_clave_contacto("contacto_ec", pub_ec)
+    
+    # Guardar cambios
+    ks.guardar(ruta_keystore, pwd_maestro)
+    
+    # Cargar Keystore
+    ks2 = zch_e2ee.KeystoreZCH.cargar(ruta_keystore, pwd_maestro)
+    
+    # Recuperar y validar claves RSA
+    priv_rsa_recup = ks2.obtener_clave_privada("mi_rsa")
+    pub_rsa_recup = ks2.obtener_clave_contacto("contacto_rsa")
+    assert priv_rsa_recup.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ) == priv_rsa.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ), "La clave privada RSA no coincide."
+    
+    assert pub_rsa_recup.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ) == pub_rsa.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ), "La clave pública RSA no coincide."
+    
+    # Recuperar y validar claves EC
+    priv_ec_recup = ks2.obtener_clave_privada("mi_ec")
+    pub_ec_recup = ks2.obtener_clave_contacto("contacto_ec")
+    
+    # Probar que las claves recuperadas funcionan derivando clave compartida
+    sh1 = zch_e2ee.derivar_clave_compartida(priv_ec, pub_ec)
+    sh2 = zch_e2ee.derivar_clave_compartida(priv_ec_recup, pub_ec_recup)
+    assert sh1 == sh2, "Las claves EC cargadas del Keystore no derivan el mismo secreto."
+    
+    # Intentar cargar con contraseña incorrecta
+    try:
+        zch_e2ee.KeystoreZCH.cargar(ruta_keystore, "ClaveIncorrecta")
+        assert False, "Debió fallar con ErrorContrasenaIncorrecta."
+    except zch_e2ee.ErrorContrasenaIncorrecta as e:
+        print(f"  [OK] Capturado ErrorContrasenaIncorrecta al cargar Keystore: {e}")
+        
+    # Limpiar
+    if os.path.exists(ruta_keystore):
+        os.remove(ruta_keystore)
+        
+    print("  [OK] Llavero KeystoreZCH validado correctamente.")
+
+def test_double_ratchet():
+    print("\n--- TEST: Protocolo Double Ratchet Simplificado ---")
+    # Generar claves para Alice y Bob
+    priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+    
+    # Inicializar sesiones
+    sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
+    sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+    
+    # Mensaje 1: Alice -> Bob
+    msg1 = "Hola Bob, este es el inicio de nuestra sesion segura."
+    cifrado1 = sesion_alice.enviar_mensaje(msg1)
+    descifrado1 = sesion_bob.recibir_mensaje(cifrado1)
+    assert descifrado1 == msg1, "Mensaje 1 falló al ser descifrado por Bob."
+    
+    # Mensaje 2: Bob -> Alice (respuesta)
+    msg2 = "Entendido Alice, te escucho fuerte y claro."
+    cifrado2 = sesion_bob.enviar_mensaje(msg2)
+    descifrado2 = sesion_alice.recibir_mensaje(cifrado2)
+    assert descifrado2 == msg2, "Mensaje 2 falló al ser descifrado por Alice."
+    
+    # Mensaje 3: Alice -> Bob (continuación)
+    msg3 = "Excelente. El trinquete está rotando las llaves perfectamente."
+    cifrado3 = sesion_alice.enviar_mensaje(msg3)
+    descifrado3 = sesion_bob.recibir_mensaje(cifrado3)
+    assert descifrado3 == msg3, "Mensaje 3 falló al ser descifrado por Bob."
+    
+    print("  [OK] Double Ratchet validado correctamente.")
+
+def test_hmac_autenticacion():
+    print("\n--- TEST: Autenticación HMAC-SHA256 ---")
+    datos = b"Mensaje importante que no debe ser modificado"
+    clave = b"ClaveSecretaSuperSeguraHMAC12345"
+    
+    hmac_val = zch_e2ee.calcular_hmac(datos, clave)
+    assert len(hmac_val) == 32, "El HMAC-SHA256 debe tener 32 bytes."
+    
+    # Verificar exitoso
+    es_valido = zch_e2ee.verificar_hmac(datos, hmac_val, clave)
+    assert es_valido is True, "La verificación del HMAC debió ser exitosa."
+    
+    # Verificar con datos modificados
+    es_valido_mod = zch_e2ee.verificar_hmac(datos + b" alterado", hmac_val, clave)
+    assert es_valido_mod is False, "La verificación con datos alterados debió fallar."
+    
+    # Verificar con clave incorrecta
+    es_valido_clave = zch_e2ee.verificar_hmac(datos, hmac_val, b"ClaveIncorrectaHMAC")
+    assert es_valido_clave is False, "La verificación con clave incorrecta debió fallar."
+    
+    print("  [OK] Autenticación HMAC validada correctamente.")
+
+def test_encrypted_importer():
+    print("\n--- TEST: Importador de Módulos Python Cifrados ---")
+    import sys
+    
+    # Definir nombres y rutas
+    nombre_modulo = "modulo_test_import"
+    archivo_py = f"{nombre_modulo}.py"
+    archivo_enc = f"{nombre_modulo}.py.enc"
+    password = "ImportPassword100"
+    
+    if os.path.exists(archivo_py):
+        os.remove(archivo_py)
+    if os.path.exists(archivo_enc):
+        os.remove(archivo_enc)
+        
+    # Escribir código original
+    codigo_fuente = (
+        "def saludar():\n"
+        "    return 'Hola, este es un modulo secreto cargado en memoria!'\n"
+        "def calcular(a, b):\n"
+        "    return a + b\n"
+    )
+    with open(archivo_py, "w", encoding="utf-8") as f:
+        f.write(codigo_fuente)
+        
+    # Encriptar módulo
+    zch_e2ee.encriptar_modulo_python(archivo_py, archivo_enc, password)
+    
+    # Eliminar archivo original .py
+    os.remove(archivo_py)
+    assert not os.path.exists(archivo_py), "El archivo .py original no debió quedar en disco."
+    
+    # Registrar importador cifrado
+    zch_e2ee.registrar_importador_cifrado(password)
+    
+    # Importar modulo en memoria
+    try:
+        import modulo_test_import
+        
+        # Validar funcionamiento de funciones internas
+        saludo = modulo_test_import.saludar()
+        suma = modulo_test_import.calcular(10, 20)
+        
+        assert saludo == 'Hola, este es un modulo secreto cargado en memoria!'
+        assert suma == 30
+        print("  [OK] Módulo cifrado importado y ejecutado exitosamente en memoria.")
+    except Exception as e:
+        raise AssertionError(f"Fallo al importar o ejecutar el módulo cifrado: {e}")
+    finally:
+        # Limpiar
+        if os.path.exists(archivo_enc):
+            os.remove(archivo_enc)
+            
+        # Remover el buscador para no contaminar el sys.meta_path
+        from zch_e2ee.importer import EncryptedModuleFinder
+        sys.meta_path = [f for f in sys.meta_path if not isinstance(f, EncryptedModuleFinder)]
+        
+        # Quitar el módulo de sys.modules para permitir re-importaciones limpias en pruebas
+        if nombre_modulo in sys.modules:
+            del sys.modules[nombre_modulo]
+            
+    print("  [OK] Importador de módulos cifrados validado correctamente.")
+
+def test_excepciones_detalladas_v1():
+    print("\n--- TEST: Excepciones Detalladas v1.0.0 (KVV y Datos Corruptos) ---")
+    mensaje = "Este es un mensaje secreto"
+    pwd_correcto = "ClaveCorrecta"
+    pwd_incorrecto = "ClaveIncorrecta"
+    
+    cifrado = zch_e2ee.encriptar_con_password(mensaje, pwd_correcto)
+    
+    # 1. Verificar error de contraseña incorrecta con Scrypt (KVV)
+    try:
+        zch_e2ee.desencriptar_con_password(cifrado, pwd_incorrecto)
+        assert False, "Debió fallar con ErrorContrasenaIncorrecta."
+    except zch_e2ee.ErrorContrasenaIncorrecta as e:
+        print(f"  [OK] Capturado ErrorContrasenaIncorrecta (KVV): {e}")
+    except zch_e2ee.ErrorDescifrado as e:
+        assert False, f"Debió lanzar ErrorContrasenaIncorrecta, lanzó ErrorDescifrado genérico: {e}"
+        
+    # 2. Verificar error de datos corruptos al descifrar (manipulación de datos cifrados con clave correcta)
+    # Modificamos los bytes cifrados en el base64 sin cambiar el KVV
+    datos_cifrados_bytes = base64.b64decode(cifrado.encode('utf-8'))
+    # Modificar los últimos bytes (que corresponden al texto cifrado/tag)
+    datos_corruptos_bytes = datos_cifrados_bytes[:-4] + bytes([datos_cifrados_bytes[-4] ^ 0xFF]) + datos_cifrados_bytes[-3:]
+    cifrado_corrupto = base64.b64encode(datos_corruptos_bytes).decode('utf-8')
+    
+    try:
+        zch_e2ee.desencriptar_con_password(cifrado_corrupto, pwd_correcto)
+        assert False, "Debió fallar con ErrorDatosCorruptos."
+    except zch_e2ee.ErrorDatosCorruptos as e:
+        print(f"  [OK] Capturado ErrorDatosCorruptos: {e}")
+    except zch_e2ee.ErrorDescifrado as e:
+        assert False, f"Debió lanzar ErrorDatosCorruptos, lanzó ErrorDescifrado genérico: {e}"
+        
+    print("  [OK] Excepciones detalladas validadas correctamente.")
+
+# =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.9.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.0")
     print("=" * 75)
+    
+    # Importación local para test de Keystore
+    global serialization
+    from cryptography.hazmat.primitives import serialization
     
     try:
         # Tests Heredados/Clásicos
@@ -638,10 +901,22 @@ def main():
         test_e2ee_multi_errores()
         test_archivo_multi()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V0.9.0 PASARON EXITOSAMENTE!")
+        # Tests v1.0.0
+        test_shamir_secret_sharing()
+        test_keystore_zch()
+        test_double_ratchet()
+        test_hmac_autenticacion()
+        test_encrypted_importer()
+        test_excepciones_detalladas_v1()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.0 PASARON EXITOSAMENTE!")
     except AssertionError as e:
+        import traceback
+        traceback.print_exc()
         print(f"\n[ERROR] Fallo en la validacion: {e}")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"\n[ERROR] Error inesperado en ejecucion: {e}")
     
     print("=" * 75)

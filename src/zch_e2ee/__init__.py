@@ -2,6 +2,8 @@ from .zch_e2ee import (
     # Excepciones
     CriptoError,
     ErrorDescifrado,
+    ErrorContrasenaIncorrecta,
+    ErrorDatosCorruptos,
     ErrorFirma,
     ErrorClave,
     
@@ -70,5 +72,25 @@ from .zch_e2ee import (
     # Auxiliares
     calcular_sha256,
     firmar_archivo,
-    verificar_firma_archivo
+    verificar_firma_archivo,
+    
+    # Criptografía de Umbral (Shamir)
+    dividir_secreto_shamir,
+    reconstruir_secreto_shamir,
+    
+    # Llavero Seguro (Keystore)
+    KeystoreZCH,
+    
+    # Autenticación Simétrica (HMAC)
+    calcular_hmac,
+    verificar_hmac,
+    
+    # Protocolos (Double Ratchet)
+    SesionDoubleRatchet
+)
+
+# Importer se expone mediante su propio módulo para evitar imports circulares pesados
+from .importer import (
+    registrar_importador_cifrado,
+    encriptar_modulo_python
 )

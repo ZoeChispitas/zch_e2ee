@@ -3,8 +3,9 @@ import zlib
 import base64
 import tempfile
 import zipfile
+import json
 from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519, ed25519, utils
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import serialization, hashes, hmac
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -21,6 +22,14 @@ class ErrorDescifrado(CriptoError):
     """Se lanza cuando falla el descifrado (clave incorrecta, datos corruptos, etc.)."""
     pass
 
+class ErrorContrasenaIncorrecta(ErrorDescifrado):
+    """Se lanza cuando la contraseña ingresada no es válida."""
+    pass
+
+class ErrorDatosCorruptos(ErrorDescifrado):
+    """Se lanza cuando los datos cifrados han sido manipulados o están dañados."""
+    pass
+
 class ErrorFirma(CriptoError):
     """Se lanza cuando la verificación de firma digital falla."""
     pass
@@ -30,7 +39,7 @@ class ErrorClave(CriptoError):
     pass
 
 # =====================================================================
-# AUXILIARES INTERNOS
+# AUXILIARES INTERNOS Y ARITMÉTICA GF(256) PARA SHAMIR
 # =====================================================================
 
 def _obtener_huella_publica(clave_publica) -> bytes:
@@ -58,6 +67,50 @@ def _obtener_huella_publica(clave_publica) -> bytes:
         if isinstance(e, CriptoError):
             raise
         raise ErrorClave(f"Error al calcular la huella de clave pública: {e}")
+
+# --- Aritmética sobre Cuerpo de Galois GF(256) ---
+
+def gf_add(x, y):
+    return x ^ y
+
+def gf_mul(x, y):
+    res = 0
+    for _ in range(8):
+        if y & 1:
+            res ^= x
+        hi_bit_set = x & 0x80
+        x <<= 1
+        if hi_bit_set:
+            x ^= 0x1D  # Polinomio primitivo x^8 + x^4 + x^3 + x + 1 (descartando el bit 9)
+        y >>= 1
+    return res & 0xFF
+
+def gf_pow(x, power):
+    res = 1
+    base = x
+    while power > 0:
+        if power & 1:
+            res = gf_mul(res, base)
+        base = gf_mul(base, base)
+        power >>= 1
+    return res
+
+def gf_inv(x):
+    if x == 0:
+        raise ValueError("División por cero en GF(256)")
+    return gf_pow(x, 254)
+
+def gf_div(x, y):
+    return gf_mul(x, gf_inv(y))
+
+def _eval_poly(poly, x):
+    """
+    Evalúa un polinomio en GF(256) en el punto x usando el método de Horner.
+    """
+    res = 0
+    for coeff in reversed(poly):
+        res = gf_mul(res, x) ^ coeff
+    return res
 
 # =====================================================================
 # APARTADO RSA: LLAVES, SERIALIZACIÓN Y HIGH-LEVEL E2EE
@@ -1142,7 +1195,7 @@ def desencriptar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, clave_p
         raise ErrorDescifrado(f"Fallo al descifrar archivo multi-destinatario: {e}")
 
 # =====================================================================
-# APARTADO CONTRASEÑA TRADICIONAL (SIMÉTRICA - SCRYPT + AES-GCM)
+# APARTADO CONTRASEÑA TRADICIONAL (SÉMETRICA - SCRYPT + AES-GCM + KVV)
 # =====================================================================
 
 def encriptar_con_password(mensaje: str, password: str) -> str:
@@ -1169,12 +1222,15 @@ def encriptar_con_password(mensaje: str, password: str) -> str:
         )
         clave_aes = kdf.derive(password.encode('utf-8'))
         
+        # Calcular KVV (Key Verification Value) de 4 bytes
+        kvv = calcular_hmac(b"verifier", clave_aes)[:4]
+        
         # Cifrar usando AES-GCM
         aesgcm = AESGCM(clave_aes)
         texto_cifrado = aesgcm.encrypt(nonce, datos_mensaje, None)
         
-        # Empaquetar: [sal (16 bytes)] + [nonce (12 bytes)] + [texto_cifrado]
-        paquete = sal + nonce + texto_cifrado
+        # Empaquetar: [sal (16 bytes)] + [nonce (12 bytes)] + [kvv (4 bytes)] + [texto_cifrado]
+        paquete = sal + nonce + kvv + texto_cifrado
         return base64.b64encode(paquete).decode('utf-8')
     except Exception as e:
         raise CriptoError(f"Error al encriptar con contraseña: {e}")
@@ -1192,7 +1248,8 @@ def desencriptar_con_password(payload_b64: str, password: str) -> str:
         # Extraer componentes
         sal = paquete[:tamanio_sal]
         nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
-        texto_cifrado = paquete[tamanio_sal + tamanio_nonce:]
+        kvv = paquete[tamanio_sal + tamanio_nonce : tamanio_sal + tamanio_nonce + 4]
+        texto_cifrado = paquete[tamanio_sal + tamanio_nonce + 4:]
         
         # Derivar la misma clave usando la sal extraida
         kdf = Scrypt(
@@ -1204,13 +1261,23 @@ def desencriptar_con_password(payload_b64: str, password: str) -> str:
         )
         clave_aes = kdf.derive(password.encode('utf-8'))
         
+        # Verificar KVV
+        kvv_calculado = calcular_hmac(b"verifier", clave_aes)[:4]
+        if kvv_calculado != kvv:
+            raise ErrorContrasenaIncorrecta("La contraseña ingresada es incorrecta.")
+        
         # Descifrar usando AES-GCM y descomprimir
-        aesgcm = AESGCM(clave_aes)
-        datos_comprimidos = aesgcm.decrypt(nonce, texto_cifrado, None)
-        datos_originales = zlib.decompress(datos_comprimidos)
+        try:
+            aesgcm = AESGCM(clave_aes)
+            datos_comprimidos = aesgcm.decrypt(nonce, texto_cifrado, None)
+            datos_originales = zlib.decompress(datos_comprimidos)
+        except Exception as e:
+            raise ErrorDatosCorruptos(f"Los datos están corruptos o fueron modificados: {e}")
         
         return datos_originales.decode('utf-8')
     except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
         raise ErrorDescifrado(f"Fallo al desencriptar el mensaje con contraseña: {e}")
 
 def encriptar_y_firmar_e2ee(mensaje: str, clave_publica_destinatario, clave_privada_emisor) -> str:
@@ -1308,14 +1375,17 @@ def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password
         )
         clave_aes = kdf.derive(password.encode('utf-8'))
         
+        # Calcular KVV
+        kvv = calcular_hmac(b"verifier", clave_aes)[:4]
+        
         # Cifrar con AES-GCM
         aesgcm = AESGCM(clave_aes)
         datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
         
-        # Escribir el archivo final v2: [ZCH\x02\x03] + [sal (16 bytes)] + [nonce (12 bytes)] + [datos_cifrados]
+        # Escribir el archivo final v2: [ZCH\x02\x03] + [sal (16 bytes)] + [nonce (12 bytes)] + [kvv (4 bytes)] + [datos_cifrados]
         cabecera = b"ZCH\x02\x03"
         with open(ruta_destino, 'wb') as f:
-            f.write(cabecera + sal + nonce + datos_cifrados)
+            f.write(cabecera + sal + nonce + kvv + datos_cifrados)
     except Exception as e:
         raise CriptoError(f"Error al encriptar archivo con contraseña: {e}")
 
@@ -1338,27 +1408,45 @@ def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, passw
                 raise ErrorClave(f"Modo de cifrado inesperado en archivo: {modo}")
             sal = paquete[5 : 5 + tamanio_sal]
             nonce = paquete[5 + tamanio_sal : 5 + tamanio_sal + tamanio_nonce]
-            datos_cifrados = paquete[5 + tamanio_sal + tamanio_nonce:]
+            kvv = paquete[5 + tamanio_sal + tamanio_nonce : 5 + tamanio_sal + tamanio_nonce + 4]
+            datos_cifrados = paquete[5 + tamanio_sal + tamanio_nonce + 4:]
+            
+            # Derivar la misma clave usando la sal
+            kdf = Scrypt(
+                salt=sal,
+                length=32,
+                n=2**14,
+                r=8,
+                p=1
+            )
+            clave_aes = kdf.derive(password.encode('utf-8'))
+            
+            # Verificar KVV
+            kvv_calculado = calcular_hmac(b"verifier", clave_aes)[:4]
+            if kvv_calculado != kvv:
+                raise ErrorContrasenaIncorrecta("La contraseña ingresada es incorrecta.")
         else:
-            # Legacy (v1)
+            # Legacy (v1 - no tiene KVV)
             sal = paquete[:tamanio_sal]
             nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
             datos_cifrados = paquete[tamanio_sal + tamanio_nonce:]
-        
-        # Derivar la misma clave usando la sal
-        kdf = Scrypt(
-            salt=sal,
-            length=32,
-            n=2**14,
-            r=8,
-            p=1
-        )
-        clave_aes = kdf.derive(password.encode('utf-8'))
+            
+            kdf = Scrypt(
+                salt=sal,
+                length=32,
+                n=2**14,
+                r=8,
+                p=1
+            )
+            clave_aes = kdf.derive(password.encode('utf-8'))
         
         # Descifrar y descomprimir
-        aesgcm = AESGCM(clave_aes)
-        datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
-        datos_originales = zlib.decompress(datos_comprimidos)
+        try:
+            aesgcm = AESGCM(clave_aes)
+            datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+            datos_originales = zlib.decompress(datos_comprimidos)
+        except Exception as e:
+            raise ErrorDatosCorruptos(f"Los datos están corruptos o fueron modificados: {e}")
         
         with open(ruta_destino, 'wb') as f:
             f.write(datos_originales)
@@ -1627,3 +1715,294 @@ def desencriptar_directorio_e2ee(ruta_origen: str, ruta_directorio_destino: str,
     finally:
         if os.path.exists(ruta_temp_zip):
             os.remove(ruta_temp_zip)
+
+# =====================================================================
+# NOVEDADES V1.0.0: CRIPTOGRAFÍA DE UMBRAL (SHAMIR), HMAC Y KEYSTORE
+# =====================================================================
+
+# ----------------- ESQUEMA DE SHAMIR -----------------
+
+def dividir_secreto_shamir(secreto: bytes, n: int, t: int) -> list[tuple[int, bytes]]:
+    """
+    Divide un secreto en N partes de las cuales se requieren T para reconstruirlo.
+    """
+    if t > n:
+        raise ValueError("El umbral T no puede ser mayor que N.")
+    if n > 255 or n < 1 or t < 1:
+        raise ValueError("N debe estar entre 1 y 255.")
+    
+    shares = {x: bytearray() for x in range(1, n + 1)}
+    
+    for byte in secreto:
+        poly = [byte] + [os.urandom(1)[0] for _ in range(t - 1)]
+        for x in range(1, n + 1):
+            shares[x].append(_eval_poly(poly, x))
+            
+    return [(x, bytes(y)) for x, y in shares.items()]
+
+def reconstruir_secreto_shamir(partes: list[tuple[int, bytes]]) -> bytes:
+    """
+    Reconstruye un secreto a partir de una lista de partes.
+    """
+    if not partes:
+        raise ValueError("Se requiere al menos una parte para reconstruir.")
+        
+    num_partes = len(partes)
+    longitud_secreto = len(partes[0][1])
+    
+    for x, data in partes:
+        if len(data) != longitud_secreto:
+            raise ValueError("Todas las partes deben tener la misma longitud.")
+            
+    xs = [p[0] for p in partes]
+    coeficientes = []
+    for i in range(num_partes):
+        c = 1
+        xi = xs[i]
+        for j in range(num_partes):
+            if i != j:
+                xj = xs[j]
+                num = xj
+                den = xi ^ xj
+                c = gf_mul(c, gf_div(num, den))
+        coeficientes.append(c)
+        
+    secreto = bytearray()
+    for byte_idx in range(longitud_secreto):
+        val = 0
+        for i in range(num_partes):
+            y = partes[i][1][byte_idx]
+            val ^= gf_mul(y, coeficientes[i])
+        secreto.append(val)
+        
+    return bytes(secreto)
+
+# ----------------- LLAVERO CRIPTOGRÁFICO SEGURO (KEYSTORE) -----------------
+
+class KeystoreZCH:
+    """
+    Llavero criptográfico seguro cifrado simétricamente (Scrypt + AES-GCM).
+    """
+    def __init__(self):
+        self.claves_privadas = {}
+        self.claves_publicas = {}
+
+    @classmethod
+    def crear(cls, ruta_archivo: str, password_maestro: str):
+        ks = cls()
+        ks.guardar(ruta_archivo, password_maestro)
+        return ks
+
+    @classmethod
+    def cargar(cls, ruta_archivo: str, password_maestro: str):
+        with open(ruta_archivo, 'r', encoding='utf-8') as f:
+            payload_b64 = f.read()
+        
+        datos_json = desencriptar_con_password(payload_b64, password_maestro)
+        data = json.loads(datos_json)
+        
+        ks = cls()
+        ks.claves_privadas = data.get("claves_privadas", {})
+        ks.claves_publicas = data.get("claves_publicas", {})
+        return ks
+
+    def guardar(self, ruta_archivo: str, password_maestro: str):
+        data = {
+            "claves_privadas": self.claves_privadas,
+            "claves_publicas": self.claves_publicas
+        }
+        datos_json = json.dumps(data)
+        payload_b64 = encriptar_con_password(datos_json, password_maestro)
+        with open(ruta_archivo, 'w', encoding='utf-8') as f:
+            f.write(payload_b64)
+
+    def guardar_clave_propia(self, alias: str, clave_privada):
+        if isinstance(clave_privada, rsa.RSAPrivateKey):
+            pem = serializar_llave_privada(clave_privada)
+        else:
+            pem = serializar_llave_privada_ec(clave_privada)
+        self.claves_privadas[alias] = pem
+
+    def obtener_clave_privada(self, alias: str):
+        if alias not in self.claves_privadas:
+            raise ErrorClave(f"No se encontró la clave privada con el alias '{alias}'.")
+        pem = self.claves_privadas[alias]
+        if "BEGIN PRIVATE KEY" in pem:
+            try:
+                return cargar_llave_privada_ec(pem)
+            except Exception:
+                return cargar_llave_privada(pem)
+        else:
+            raise ErrorClave(f"Formato de clave no reconocido para '{alias}'.")
+
+    def guardar_clave_contacto(self, alias: str, clave_publica):
+        if isinstance(clave_publica, rsa.RSAPublicKey):
+            pem = serializar_llave_publica(clave_publica)
+        else:
+            pem = serializar_llave_publica_ec(clave_publica)
+        self.claves_publicas[alias] = pem
+
+    def obtener_clave_contacto(self, alias: str):
+        if alias not in self.claves_publicas:
+            raise ErrorClave(f"No se encontró la clave pública del contacto '{alias}'.")
+        pem = self.claves_publicas[alias]
+        try:
+            return cargar_llave_publica_ec(pem)
+        except Exception:
+            return cargar_llave_publica(pem)
+
+# ----------------- AUTENTICACIÓN SIMÉTRICA (HMAC) -----------------
+
+def calcular_hmac(datos: bytes, clave: bytes) -> bytes:
+    """
+    Calcula el HMAC-SHA256 de unos datos usando la clave especificada.
+    """
+    try:
+        h = hmac.HMAC(clave, hashes.SHA256())
+        h.update(datos)
+        return h.finalize()
+    except Exception as e:
+        raise CriptoError(f"Error al calcular HMAC: {e}")
+
+def verificar_hmac(datos: bytes, hmac_esperado: bytes, clave: bytes) -> bool:
+    """
+    Verifica que el HMAC-SHA256 de los datos sea igual al esperado.
+    """
+    try:
+        h = hmac.HMAC(clave, hashes.SHA256())
+        h.update(datos)
+        h.verify(hmac_esperado)
+        return True
+    except Exception:
+        return False
+
+# ----------------- PROTOCOLO DOUBLE RATCHET SIMPLIFICADO -----------------
+
+class SesionDoubleRatchet:
+    """
+    Sesión de mensajería cifrada interactiva con renovación de clave (Double Ratchet).
+    """
+    def __init__(self, clave_privada_propia_x25519, clave_publica_destinatario_x25519, es_iniciador: bool):
+        self.dhp = clave_privada_propia_x25519
+        self.dhr = clave_publica_destinatario_x25519
+        self.es_iniciador = es_iniciador
+        self.dh_local = x25519.X25519PrivateKey.generate()
+        self.rk = derivar_clave_compartida(self.dhp, self.dhr)
+        
+        if es_iniciador:
+            self.info_send = b'zch-e2ee ck Alice to Bob'
+            self.info_recv = b'zch-e2ee ck Bob to Alice'
+            
+            # La primera clave de Alice se deriva haciendo DH con la identidad pública de Bob
+            secreto = self.dh_local.exchange(self.dhr)
+            self.rk, self.ck_send = self._kdf_rk(self.rk, secreto, self.info_send)
+            self.ck_recv = None
+            self.last_dh_remota = self.dhr
+        else:
+            self.info_send = b'zch-e2ee ck Bob to Alice'
+            self.info_recv = b'zch-e2ee ck Alice to Bob'
+            self.ck_send = None
+            self.ck_recv = None
+            self.last_dh_remota = None
+
+    def _kdf_rk(self, rk, secreto, info_ck):
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=rk,
+            info=b'zch-e2ee double ratchet kdf_rk'
+        )
+        okm = hkdf.derive(secreto)
+        new_rk = okm[:32]
+        new_ck = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=okm[32:],
+            info=info_ck
+        ).derive(b'')
+        return new_rk, new_ck
+
+    def _symmetric_ratchet(self, ck):
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=ck,
+            info=b'zch-e2ee symmetric ratchet step'
+        )
+        okm = hkdf.derive(b'')
+        mk = okm[:32]
+        new_ck = okm[32:]
+        return new_ck, mk
+
+    def enviar_mensaje(self, texto: str) -> str:
+        if self.ck_send is None:
+            raise ErrorDescifrado("La sesión Double Ratchet no está lista para enviar.")
+            
+        self.ck_send, mk = self._symmetric_ratchet(self.ck_send)
+        
+        datos = zlib.compress(texto.encode('utf-8'))
+        aesgcm = AESGCM(mk)
+        nonce = os.urandom(12)
+        cifrado = aesgcm.encrypt(nonce, datos, None)
+        
+        pub_local_bytes = self.dh_local.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+        
+        paquete = pub_local_bytes + nonce + cifrado
+        return base64.b64encode(paquete).decode('utf-8')
+
+    def recibir_mensaje(self, payload_b64: str) -> str:
+        paquete = base64.b64decode(payload_b64.encode('utf-8'))
+        
+        pub_remota_bytes = paquete[:32]
+        nonce = paquete[32 : 32 + 12]
+        cifrado = paquete[32 + 12:]
+        
+        pub_remota = x25519.X25519PublicKey.from_public_bytes(pub_remota_bytes)
+        
+        # Comparar si la clave pública remota cambió (o si es el primer mensaje)
+        pub_remota_raw = pub_remota.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+        
+        last_raw = None
+        if self.last_dh_remota is not None:
+            last_raw = self.last_dh_remota.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw
+            )
+            
+        if last_raw != pub_remota_raw:
+            # Nuevo tramo de trinquete DH
+            if self.last_dh_remota is None:
+                # Primer paso del receptor: DH entre su clave de identidad privada y la pública efímera del iniciador
+                secreto = self.dhp.exchange(pub_remota)
+            else:
+                # Siguientes pasos: DH entre su clave efímera local y la pública efímera remota
+                secreto = self.dh_local.exchange(pub_remota)
+                
+            self.rk, self.ck_recv = self._kdf_rk(self.rk, secreto, self.info_recv)
+            
+            # Generar nueva clave efímera y computar envío
+            self.dh_local = x25519.X25519PrivateKey.generate()
+            secreto2 = self.dh_local.exchange(pub_remota)
+            
+            self.rk, self.ck_send = self._kdf_rk(self.rk, secreto2, self.info_send)
+            
+            self.last_dh_remota = pub_remota
+            
+        # Trinquete simétrico en la cadena de recepción
+        self.ck_recv, mk = self._symmetric_ratchet(self.ck_recv)
+        
+        # Descifrar y descomprimir
+        try:
+            aesgcm = AESGCM(mk)
+            datos_comprimidos = aesgcm.decrypt(nonce, cifrado, None)
+            datos_originales = zlib.decompress(datos_comprimidos)
+        except Exception as e:
+            raise ErrorDatosCorruptos(f"Fallo al descifrar mensaje Double Ratchet: {e}")
+            
+        return datos_originales.decode('utf-8')
