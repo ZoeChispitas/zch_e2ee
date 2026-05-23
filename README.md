@@ -1,25 +1,36 @@
 # zch-e2ee
 
-Modulo en Python de encriptacion de extremo a extremo (E2EE) y firmas digitales usando RSA y AES-GCM.
+Módulo de Python de alto nivel para encriptación de extremo a extremo (E2EE) y firmas digitales.
 
-## Instalacion
+## Características principales
+
+*   **Cifrado Asimétrico RSA:** Encriptación híbrida usando RSA-2048 y AES-GCM.
+*   **Cifrado Simétrico por Contraseña:** Cifrado fuerte derivando claves con Scrypt + AES-GCM.
+*   **Acuerdo de claves elípticas:** Intercambio de claves seguro Diffie-Hellman sobre curvas elípticas (ECDH X25519).
+*   **Firmas digitales:** Autenticación y no repudio mediante firmas RSA-PSS.
+*   **Compresión automática:** Integración transparente de compresión zlib antes de cifrar.
+*   **Cifrado de archivos:** Soporte para encriptar cualquier tipo de archivo usando claves o contraseñas.
+
+## Instalación
 
 ```bash
 pip install zch-e2ee
 ```
 
-## Uso Basico
+## Uso Básico
+
+Aquí tienes un ejemplo de cómo cifrar y descifrar un texto usando llaves asimétricas:
 
 ```python
 import zch_e2ee
 
-# 1. Generar claves
+# 1. Generar par de llaves criptográficas
 privada, publica = zch_e2ee.generar_llaves()
 
-# 2. Encriptar un mensaje para un destinatario
-mensaje_encriptado = zch_e2ee.encriptar_e2ee("Hola mundo", publica)
+# 2. Cifrar un mensaje para el destinatario
+cifrado = zch_e2ee.encriptar_e2ee("Hola, este es un mensaje seguro", publica)
 
-# 3. Desencriptar el mensaje
-mensaje_original = zch_e2ee.desencriptar_e2ee(mensaje_encriptado, privada)
-print(mensaje_original) # Hola mundo
+# 3. Descifrar el mensaje recibido
+original = zch_e2ee.desencriptar_e2ee(cifrado, privada)
+print(original)  # "Hola, este es un mensaje seguro"
 ```
