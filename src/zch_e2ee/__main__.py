@@ -3,6 +3,7 @@ import sys
 import json
 import argparse
 import base64
+import tempfile
 import zch_e2ee
 
 def imprimir_exito(mensaje, json_mode=False, data_dict=None):
@@ -23,7 +24,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.3)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.4)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -382,7 +383,7 @@ def menu_interactivo():
             imprimir_error("Opción inválida.")
  
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.3 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.4 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
