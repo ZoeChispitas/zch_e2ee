@@ -1,6 +1,8 @@
 import os
 import zlib
 import base64
+import tempfile
+import zipfile
 from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519, utils
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -96,8 +98,8 @@ def desencriptar_e2ee(payload_b64: str, clave_privada_destinatario) -> str:
     # 1. Decodificar el paquete desde Base64
     paquete_cifrado = base64.b64decode(payload_b64.encode('utf-8'))
 
-    # Para RSA-2048, la clave AES encriptada mide exactamente 256 bytes
-    tamanio_rsa_key = 256
+    # Calcular el tamano de la clave RSA dinamicamente (key_size // 8)
+    tamanio_rsa_key = clave_privada_destinatario.key_size // 8
     tamanio_nonce = 12
 
     # 2. Extraer los componentes del paquete
@@ -247,7 +249,7 @@ def desencriptar_archivo_e2ee(ruta_origen: str, ruta_destino: str, clave_privada
     with open(ruta_origen, 'rb') as f:
         paquete = f.read()
         
-    tamanio_rsa_key = 256
+    tamanio_rsa_key = clave_privada_destinatario.key_size // 8
     tamanio_nonce = 12
     
     # Extraer componentes del paquete binario
@@ -393,7 +395,7 @@ def desencriptar_y_verificar_e2ee(payload_b64: str, clave_privada_destinatario, 
     """
     paquete_final = base64.b64decode(payload_b64.encode('utf-8'))
     
-    tamanio_firma = 256 # Para RSA-2048 la firma mide 256 bytes
+    tamanio_firma = clave_publica_emisor.key_size // 8
     
     # 1. Extraer firma y paquete cifrado
     firma = paquete_final[:tamanio_firma]
@@ -577,7 +579,7 @@ def desencriptar_y_verificar_archivo_e2ee(ruta_origen: str, ruta_destino: str, c
     with open(ruta_origen, 'rb') as f:
         paquete_final = f.read()
         
-    tamanio_firma = 256 # Firma RSA-2048
+    tamanio_firma = clave_publica_emisor.key_size // 8
     
     # 1. Extraer componentes
     firma = paquete_final[:tamanio_firma]
@@ -603,7 +605,7 @@ def desencriptar_y_verificar_archivo_e2ee(ruta_origen: str, ruta_destino: str, c
         firma_valida = False
         
     # 3. Descifrar el paquete cifrado
-    tamanio_rsa_key = 256
+    tamanio_rsa_key = clave_privada_destinatario.key_size // 8
     tamanio_nonce = 12
     
     clave_aes_encriptada = paquete_cifrado_bytes[:tamanio_rsa_key]
@@ -627,4 +629,46 @@ def desencriptar_y_verificar_archivo_e2ee(ruta_origen: str, ruta_destino: str, c
         f.write(datos_originales)
         
     return firma_valida
+
+
+def encriptar_directorio_e2ee(ruta_directorio: str, ruta_destino: str, clave_publica_destinatario):
+    """
+    Comprime un directorio completo en un archivo temporal ZIP y luego lo cifra
+    usando la llave pública del destinatario.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(ruta_temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for raiz, _, archivos in os.walk(ruta_directorio):
+                for archivo in archivos:
+                    ruta_completa = os.path.join(raiz, archivo)
+                    ruta_relativa = os.path.relpath(ruta_completa, ruta_directorio)
+                    zipf.write(ruta_completa, arcname=ruta_relativa)
+                    
+        encriptar_archivo_e2ee(ruta_temp_zip, ruta_destino, clave_publica_destinatario)
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
+
+
+def desencriptar_directorio_e2ee(ruta_origen: str, ruta_directorio_destino: str, clave_privada_destinatario):
+    """
+    Descifra un paquete cifrado con la llave privada del destinatario,
+    obtiene el archivo ZIP temporal y lo descomprime en la carpeta de destino.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        desencriptar_archivo_e2ee(ruta_origen, ruta_temp_zip, clave_privada_destinatario)
+        os.makedirs(ruta_directorio_destino, exist_ok=True)
+        with zipfile.ZipFile(ruta_temp_zip, 'r') as zipf:
+            zipf.extractall(ruta_directorio_destino)
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
 

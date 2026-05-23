@@ -164,9 +164,85 @@ def test_archivo_cifrado_firmado():
             os.remove(archivo)
     print("  [OK] Test completado con exito.")
 
+
+def test_rsa_4096_bits():
+    print("\n--- TEST: Claves RSA de 4096 bits (Dinamicas) ---")
+    privada_alice, publica_alice = zch_e2ee.generar_llaves(4096)
+    privada_bob, publica_bob = zch_e2ee.generar_llaves(4096)
+    
+    mensaje = "Mensaje secreto usando llaves RSA gigantes de 4096 bits."
+    print(f"  Texto original: '{mensaje}'")
+    cifrado = zch_e2ee.encriptar_e2ee(mensaje, publica_bob)
+    descifrado = zch_e2ee.desencriptar_e2ee(cifrado, privada_bob)
+    print(f"  Descifrado: '{descifrado}'")
+    assert mensaje == descifrado, "Fallo al desencriptar con clave de 4096 bits."
+    
+    payload = zch_e2ee.encriptar_y_firmar_e2ee(mensaje, publica_bob, privada_alice)
+    descifrado_firma, firma_valida = zch_e2ee.desencriptar_y_verificar_e2ee(payload, privada_bob, publica_alice)
+    print(f"  Firma valida (4096 bits): {firma_valida}")
+    assert mensaje == descifrado_firma, "El mensaje firmado no coincide al descifrar."
+    assert firma_valida, "La firma de 4096 bits debio ser valida."
+    
+    print("  [OK] Test de 4096 bits completado con exito.")
+
+
+def test_encriptacion_directorios():
+    print("\n--- TEST: Cifrado y Descifrado de Directorios ---")
+    privada, publica = zch_e2ee.generar_llaves()
+    
+    dir_origen = "carpeta_prueba_origen"
+    dir_destino = "carpeta_prueba_destino"
+    archivo_cifrado = "directorio_cifrado.enc"
+    
+    os.makedirs(dir_origen, exist_ok=True)
+    
+    archivo1 = os.path.join(dir_origen, "archivo1.txt")
+    archivo2 = os.path.join(dir_origen, "subcarpeta", "archivo2.txt")
+    os.makedirs(os.path.dirname(archivo2), exist_ok=True)
+    
+    contenido1 = "Contenido del primer archivo de prueba."
+    contenido2 = "Contenido del segundo archivo de prueba en una subcarpeta."
+    
+    with open(archivo1, "w", encoding="utf-8") as f:
+        f.write(contenido1)
+    with open(archivo2, "w", encoding="utf-8") as f:
+        f.write(contenido2)
+        
+    print(f"  Directorio origen '{dir_origen}' preparado con archivos.")
+    
+    zch_e2ee.encriptar_directorio_e2ee(dir_origen, archivo_cifrado, publica)
+    print(f"  Directorio cifrado creado: '{archivo_cifrado}'")
+    
+    zch_e2ee.desencriptar_directorio_e2ee(archivo_cifrado, dir_destino, privada)
+    print(f"  Directorio descifrado en: '{dir_destino}'")
+    
+    archivo1_res = os.path.join(dir_destino, "archivo1.txt")
+    archivo2_res = os.path.join(dir_destino, "subcarpeta", "archivo2.txt")
+    
+    assert os.path.exists(archivo1_res), "El archivo 1 no existe en destino."
+    assert os.path.exists(archivo2_res), "El archivo 2 no existe en destino."
+    
+    with open(archivo1_res, "r", encoding="utf-8") as f:
+        descifrado1 = f.read()
+    with open(archivo2_res, "r", encoding="utf-8") as f:
+        descifrado2 = f.read()
+        
+    assert contenido1 == descifrado1, "El contenido del archivo 1 no coincide."
+    assert contenido2 == descifrado2, "El contenido del archivo 2 no coincide."
+    
+    import shutil
+    for d in [dir_origen, dir_destino]:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+    if os.path.exists(archivo_cifrado):
+        os.remove(archivo_cifrado)
+        
+    print("  [OK] Test de directorios completado con exito.")
+
+
 def main():
     print("=" * 70)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.6.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.7.0")
     print("=" * 70)
     
     try:
@@ -176,6 +252,8 @@ def main():
         test_archivo_password()
         test_firma_archivo_y_checksum()
         test_archivo_cifrado_firmado()
+        test_rsa_4096_bits()
+        test_encriptacion_directorios()
         print("\n[OK] ¡TODOS LOS TESTS PASARON EXITOSAMENTE!")
     except AssertionError as e:
         print(f"\n[ERROR] Fallo en la validacion: {e}")
