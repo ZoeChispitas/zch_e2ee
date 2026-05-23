@@ -1,4 +1,5 @@
 import os
+import zlib
 import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519
 from cryptography.hazmat.primitives import serialization, hashes
@@ -61,8 +62,8 @@ def encriptar_e2ee(mensaje: str, clave_publica_destinatario) -> str:
     Usa encriptación híbrida (AES-GCM de 256 bits + RSA-OAEP con SHA-256).
     Retorna un string codificado en Base64 con el payload cifrado.
     """
-    # 1. Convertir el mensaje a bytes
-    datos_mensaje = mensaje.encode('utf-8')
+    # 1. Convertir el mensaje a bytes y aplicar compresion zlib
+    datos_mensaje = zlib.compress(mensaje.encode('utf-8'))
 
     # 2. Generar una clave simétrica temporal para AES-GCM
     clave_aes = AESGCM.generate_key(bit_length=256)
@@ -114,9 +115,10 @@ def desencriptar_e2ee(payload_b64: str, clave_privada_destinatario) -> str:
         )
     )
 
-    # 4. Desencriptar el mensaje original usando AES-GCM
+    # 4. Desencriptar el mensaje original usando AES-GCM y descomprimir
     aesgcm = AESGCM(clave_aes)
-    datos_mensaje = aesgcm.decrypt(nonce, texto_cifrado, None)
+    datos_comprimidos = aesgcm.decrypt(nonce, texto_cifrado, None)
+    datos_mensaje = zlib.decompress(datos_comprimidos)
     
     return datos_mensaje.decode('utf-8')
 
@@ -214,11 +216,14 @@ def encriptar_archivo_e2ee(ruta_origen: str, ruta_destino: str, clave_publica_de
     with open(ruta_origen, 'rb') as f:
         datos = f.read()
         
+    # Comprimir datos del archivo
+    datos_comprimidos = zlib.compress(datos)
+        
     # Generar clave simetrica y nonce para AES-GCM
     clave_aes = AESGCM.generate_key(bit_length=256)
     aesgcm = AESGCM(clave_aes)
     nonce = os.urandom(12)
-    datos_cifrados = aesgcm.encrypt(nonce, datos, None)
+    datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
     
     # Cifrar clave AES con la publica RSA
     clave_aes_encriptada = clave_publica_destinatario.encrypt(
@@ -260,9 +265,10 @@ def desencriptar_archivo_e2ee(ruta_origen: str, ruta_destino: str, clave_privada
         )
     )
     
-    # Descifrar los datos con la clave AES
+    # Descifrar los datos con la clave AES y descomprimir
     aesgcm = AESGCM(clave_aes)
-    datos_originales = aesgcm.decrypt(nonce, datos_cifrados, None)
+    datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+    datos_originales = zlib.decompress(datos_comprimidos)
     
     with open(ruta_destino, 'wb') as f:
         f.write(datos_originales)
@@ -300,7 +306,8 @@ def encriptar_con_password(mensaje: str, password: str) -> str:
     Deriva la clave de 256 bits usando Scrypt, y cifra con AES-GCM.
     Retorna un payload codificado en Base64.
     """
-    datos_mensaje = mensaje.encode('utf-8')
+    # Comprimir mensaje
+    datos_mensaje = zlib.compress(mensaje.encode('utf-8'))
     
     # Generar sal y nonce aleatorios
     sal = os.urandom(16)
@@ -348,11 +355,12 @@ def desencriptar_con_password(payload_b64: str, password: str) -> str:
     )
     clave_aes = kdf.derive(password.encode('utf-8'))
     
-    # Descifrar usando AES-GCM
+    # Descifrar usando AES-GCM y descomprimir
     aesgcm = AESGCM(clave_aes)
-    datos_mensaje = aesgcm.decrypt(nonce, texto_cifrado, None)
+    datos_comprimidos = aesgcm.decrypt(nonce, texto_cifrado, None)
+    datos_originales = zlib.decompress(datos_comprimidos)
     
-    return datos_mensaje.decode('utf-8')
+    return datos_originales.decode('utf-8')
 
 def encriptar_y_firmar_e2ee(mensaje: str, clave_publica_destinatario, clave_privada_emisor) -> str:
     """
@@ -411,4 +419,71 @@ def desencriptar_y_verificar_e2ee(payload_b64: str, clave_privada_destinatario, 
     mensaje = desencriptar_e2ee(payload_cifrado_b64, clave_privada_destinatario)
     
     return mensaje, firma_valida
+
+def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password: str):
+    """
+    Encripta un archivo completo de forma simetrica usando una contraseña.
+    Aplica compresion zlib, deriva la clave mediante Scrypt y cifra usando AES-GCM.
+    """
+    with open(ruta_origen, 'rb') as f:
+        datos = f.read()
+        
+    # Aplicar compresion
+    datos_comprimidos = zlib.compress(datos)
+    
+    # Generar sal y nonce
+    sal = os.urandom(16)
+    nonce = os.urandom(12)
+    
+    # Derivar clave
+    kdf = Scrypt(
+        salt=sal,
+        length=32,
+        n=2**14,
+        r=8,
+        p=1
+    )
+    clave_aes = kdf.derive(password.encode('utf-8'))
+    
+    # Cifrar con AES-GCM
+    aesgcm = AESGCM(clave_aes)
+    datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
+    
+    # Escribir el archivo final: [sal (16 bytes)] + [nonce (12 bytes)] + [datos_cifrados]
+    with open(ruta_destino, 'wb') as f:
+        f.write(sal + nonce + datos_cifrados)
+
+def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password: str):
+    """
+    Descifra un archivo cifrado con contraseña usando Scrypt y AES-GCM,
+    descomprimiendo los datos para recuperar el archivo original.
+    """
+    with open(ruta_origen, 'rb') as f:
+        paquete = f.read()
+        
+    tamanio_sal = 16
+    tamanio_nonce = 12
+    
+    # Extraer componentes
+    sal = paquete[:tamanio_sal]
+    nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
+    datos_cifrados = paquete[tamanio_sal + tamanio_nonce:]
+    
+    # Derivar la misma clave usando la sal
+    kdf = Scrypt(
+        salt=sal,
+        length=32,
+        n=2**14,
+        r=8,
+        p=1
+    )
+    clave_aes = kdf.derive(password.encode('utf-8'))
+    
+    # Descifrar y descomprimir
+    aesgcm = AESGCM(clave_aes)
+    datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+    datos_originales = zlib.decompress(datos_comprimidos)
+    
+    with open(ruta_destino, 'wb') as f:
+        f.write(datos_originales)
 

@@ -28,3 +28,7 @@ venv/
 .venv/
 env/
 .env
+
+# Local documentation
+COMO_PUBLICAR.md
+como_publicar.md

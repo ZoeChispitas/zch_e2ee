@@ -66,15 +66,45 @@ def test_archivos():
             os.remove(archivo)
     print("  [OK] Test de archivos completado con exito.")
 
+def test_archivo_password():
+    print("\n--- TEST: Cifrado de Archivos con Contrasena (Scrypt + AES-GCM + Zlib) ---")
+    archivo_secreto = "archivo_secreto.txt"
+    archivo_cifrado = "archivo_secreto.enc"
+    archivo_descifrado = "archivo_secreto_descifrado.txt"
+    password = "ClaveDeArchivo99"
+    
+    contenido = "Este es un documento protegido unicamente con una contrasena tradicional y comprimido con zlib."
+    with open(archivo_secreto, "w", encoding="utf-8") as f:
+        f.write(contenido)
+        
+    # Encriptar
+    zch_e2ee.encriptar_archivo_con_password(archivo_secreto, archivo_cifrado, password)
+    print(f"  Archivo cifrado creado con contrasena: '{archivo_cifrado}'")
+    
+    # Descifrar
+    zch_e2ee.desencriptar_archivo_con_password(archivo_cifrado, archivo_descifrado, password)
+    with open(archivo_descifrado, "r", encoding="utf-8") as f:
+        descifrado = f.read()
+    print(f"  Archivo descifrado recuperado: '{descifrado}'")
+    
+    assert contenido == descifrado, "El archivo descifrado con contrasena no coincide."
+    
+    # Limpiar
+    for archivo in [archivo_secreto, archivo_cifrado, archivo_descifrado]:
+        if os.path.exists(archivo):
+            os.remove(archivo)
+    print("  [OK] Test completado con exito.")
+
 def main():
     print("=" * 70)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.4.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.5.0")
     print("=" * 70)
     
     try:
         test_cifrado_password()
         test_encriptacion_firmada()
         test_archivos()
+        test_archivo_password()
         print("\n[OK] ¡TODOS LOS TESTS PASARON EXITOSAMENTE!")
     except AssertionError as e:
         print(f"\n[ERROR] Fallo en la validacion: {e}")
