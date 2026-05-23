@@ -863,12 +863,65 @@ def test_excepciones_detalladas_v1():
     print("  [OK] Excepciones detalladas validadas correctamente.")
 
 # =====================================================================
+# NOVEDADES DE LA VERSIÓN 1.0.1
+# =====================================================================
+
+def test_keystore_listar_alias():
+    print("\n--- TEST: Listado de Alias en Keystore (v1.0.1) ---")
+    ruta_ks = "temp_ks_list.json"
+    pwd = "ListAliasPassword1!"
+    
+    if os.path.exists(ruta_ks):
+        os.remove(ruta_ks)
+        
+    ks = zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd)
+    
+    priv_rsa, pub_rsa = zch_e2ee.generar_llaves()
+    priv_ec, pub_ec = zch_e2ee.generar_llaves_ec()
+    
+    ks.guardar_clave_propia("privada_rsa_1", priv_rsa)
+    ks.guardar_clave_propia("privada_ec_1", priv_ec)
+    ks.guardar_clave_contacto("contacto_rsa_1", pub_rsa)
+    ks.guardar_clave_contacto("contacto_ec_1", pub_ec)
+    
+    aliases = ks.listar_alias()
+    
+    assert "privada_rsa_1" in aliases["claves_privadas"]
+    assert "privada_ec_1" in aliases["claves_privadas"]
+    assert "contacto_rsa_1" in aliases["claves_publicas"]
+    assert "contacto_ec_1" in aliases["claves_publicas"]
+    assert len(aliases["claves_privadas"]) == 2
+    assert len(aliases["claves_publicas"]) == 2
+    
+    if os.path.exists(ruta_ks):
+        os.remove(ruta_ks)
+        
+    print("  [OK] Listado de alias validado correctamente.")
+
+def test_shamir_optimizado_stress():
+    print("\n--- TEST: Stress de Shamir y Verificación de Aritmética GF(256) (v1.0.1) ---")
+    import time
+    
+    secreto = b"Secreto Super Secreto para test de stress en GF(256)"
+    
+    t0 = time.time()
+    for _ in range(50):
+        partes = zch_e2ee.dividir_secreto_shamir(secreto, n=10, t=5)
+        # Reconstruir usando parte 1, 3, 5, 7, 9
+        partes_elegidas = [partes[0], partes[2], partes[4], partes[6], partes[8]]
+        reconstruido = zch_e2ee.reconstruir_secreto_shamir(partes_elegidas)
+        assert reconstruido == secreto, "La reconstrucción optimizada de Shamir falló."
+        
+    t1 = time.time()
+    print(f"  [OK] 50 operaciones completas de Shamir realizadas en {(t1 - t0)*1000:.2f} ms.")
+
+# =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.1")
     print("=" * 75)
     
     # Importación local para test de Keystore
@@ -909,7 +962,11 @@ def main():
         test_encrypted_importer()
         test_excepciones_detalladas_v1()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.0 PASARON EXITOSAMENTE!")
+        # Tests v1.0.1
+        test_keystore_listar_alias()
+        test_shamir_optimizado_stress()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.1 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

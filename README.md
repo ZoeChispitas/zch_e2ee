@@ -1,5 +1,7 @@
 # zch-e2ee
 
+[[Read English version]](README_EN.md)
+
 Módulo de Python de alto nivel para encriptación de extremo a extremo (E2EE) y firmas digitales.
 
 ## Características principales

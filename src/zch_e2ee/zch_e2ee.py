@@ -70,38 +70,50 @@ def _obtener_huella_publica(clave_publica) -> bytes:
 
 # --- Aritmética sobre Cuerpo de Galois GF(256) ---
 
+# Tablas precomputadas para optimización
+gf_exp = [0] * 512
+gf_log = [0] * 256
+
+def _inicializar_gf256():
+    val = 1
+    for i in range(255):
+        gf_exp[i] = val
+        gf_log[val] = i
+        temp = val << 1
+        if val & 0x80:
+            temp ^= 0x1D
+        val = temp & 0xFF
+    for i in range(255, 512):
+        gf_exp[i] = gf_exp[i - 255]
+
+_inicializar_gf256()
+
 def gf_add(x, y):
     return x ^ y
 
 def gf_mul(x, y):
-    res = 0
-    for _ in range(8):
-        if y & 1:
-            res ^= x
-        hi_bit_set = x & 0x80
-        x <<= 1
-        if hi_bit_set:
-            x ^= 0x1D  # Polinomio primitivo x^8 + x^4 + x^3 + x + 1 (descartando el bit 9)
-        y >>= 1
-    return res & 0xFF
+    if x == 0 or y == 0:
+        return 0
+    return gf_exp[gf_log[x] + gf_log[y]]
 
 def gf_pow(x, power):
-    res = 1
-    base = x
-    while power > 0:
-        if power & 1:
-            res = gf_mul(res, base)
-        base = gf_mul(base, base)
-        power >>= 1
-    return res
+    if x == 0:
+        return 0 if power > 0 else 1
+    if power == 0:
+        return 1
+    return gf_exp[(gf_log[x] * power) % 255]
 
 def gf_inv(x):
     if x == 0:
         raise ValueError("División por cero en GF(256)")
-    return gf_pow(x, 254)
+    return gf_exp[255 - gf_log[x]]
 
 def gf_div(x, y):
-    return gf_mul(x, gf_inv(y))
+    if y == 0:
+        raise ValueError("División por cero en GF(256)")
+    if x == 0:
+        return 0
+    return gf_exp[gf_log[x] + 255 - gf_log[y]]
 
 def _eval_poly(poly, x):
     """
@@ -1850,6 +1862,15 @@ class KeystoreZCH:
             return cargar_llave_publica_ec(pem)
         except Exception:
             return cargar_llave_publica(pem)
+
+    def listar_alias(self) -> dict:
+        """
+        Retorna una lista de alias de llaves registradas en el llavero.
+        """
+        return {
+            "claves_privadas": list(self.claves_privadas.keys()),
+            "claves_publicas": list(self.claves_publicas.keys())
+        }
 
 # ----------------- AUTENTICACIÓN SIMÉTRICA (HMAC) -----------------
 
