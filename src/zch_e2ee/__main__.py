@@ -12,31 +12,31 @@ def imprimir_exito(mensaje, json_mode=False, data_dict=None):
             res.update(data_dict)
         print(json.dumps(res))
     else:
-        print(f"\n✨ [ÉXITO] {mensaje}")
+        print(f"\n[ÉXITO] {mensaje}")
 
 def imprimir_error(mensaje, json_mode=False):
     if json_mode:
         print(json.dumps({"status": "error", "message": mensaje}), file=sys.stderr)
     else:
-        print(f"\n❌ [ERROR] {mensaje}", file=sys.stderr)
+        print(f"\n[ERROR] {mensaje}", file=sys.stderr)
 
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" 🔒 zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.1)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.3)")
         print("=" * 70)
-        print("  1. 🔑 Generar pares de llaves (RSA, X25519 o Ed25519)")
-        print("  2. 📝 Cifrar un archivo (Contraseña o Clave Pública)")
-        print("  3. 🔓 Descifrar un archivo (Contraseña o Clave Privada)")
-        print("  4. 📁 Cifrar un directorio completo (ZIP cifrado)")
-        print("  5. 📂 Descifrar un directorio completo (ZIP descifrado)")
-        print("  6. ✍️  Firmar un archivo digitalmente")
-        print("  7. 🔍 Verificar firma digital de un archivo")
-        print("  8. 🧩 Dividir un secreto (Esquema de Shamir)")
-        print("  9. 🤝 Reconstruir un secreto desde sus partes")
-        print("  10.🛡️  Cifrar un módulo Python (.py -> .py.enc)")
-        print("  11.🗃️  Gestionar llavero criptográfico (Keystore)")
-        print("  12.🚪 Salir")
+        print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
+        print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
+        print("  3. Descifrar un archivo (Contraseña o Clave Privada)")
+        print("  4. Cifrar un directorio completo (ZIP cifrado)")
+        print("  5. Descifrar un directorio completo (ZIP descifrado)")
+        print("  6. Firmar un archivo digitalmente")
+        print("  7. Verificar firma digital de un archivo")
+        print("  8. Dividir un secreto (Esquema de Shamir)")
+        print("  9. Reconstruir un secreto desde sus partes")
+        print("  10. Cifrar un módulo Python (.py -> .py.enc)")
+        print("  11. Gestionar llavero criptográfico (Keystore)")
+        print("  12. Salir")
         print("=" * 70)
         
         opcion = input("Selecciona una opción (1-12): ").strip()
@@ -194,7 +194,7 @@ def menu_interactivo():
                 except Exception:
                     priv = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv, pwd)
                     firma = zch_e2ee.firmar_archivo(ruta_orig, priv)
-                print(f"\n📝 Firma digital (Base64):\n{firma}")
+                print(f"\nFirma digital (Base64):\n{firma}")
                 imprimir_exito("Firma generada correctamente.")
             except Exception as e:
                 imprimir_error(f"Fallo al firmar: {e}")
@@ -230,7 +230,7 @@ def menu_interactivo():
             
             try:
                 partes = zch_e2ee.dividir_secreto_shamir(secreto, n, t)
-                print("\n🧩 Partes Generadas (compártelas de forma segura):")
+                print("\nPartes Generadas (compártelas de forma segura):")
                 for idx, datos in partes:
                     parte_b64 = base64.b64encode(datos).decode('utf-8')
                     print(f"  Parte {idx}: {idx}-{parte_b64}")
@@ -257,10 +257,9 @@ def menu_interactivo():
             if not partes:
                 imprimir_error("No ingresaste ninguna parte.")
                 continue
-            
             try:
                 secreto = zch_e2ee.reconstruir_secreto_shamir(partes)
-                print(f"\n🔑 Secreto Reconstruido: '{secreto.decode('utf-8', errors='ignore')}'")
+                print(f"\nSecreto Reconstruido: '{secreto.decode('utf-8', errors='ignore')}'")
                 imprimir_exito("Secreto recuperado correctamente.")
             except Exception as e:
                 imprimir_error(f"Fallo al reconstruir el secreto: {e}")
@@ -305,11 +304,11 @@ def menu_interactivo():
                 try:
                     ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
                     aliases = ks.listar_alias()
-                    print("\n🔐 --- ALIAS EN LLAVERO ---")
-                    print("🔑 Claves Privadas Propias:")
+                    print("\n--- ALIAS EN LLAVERO ---")
+                    print("Claves Privadas Propias:")
                     for a in aliases["claves_privadas"]:
                         print(f"  - {a}")
-                    print("\n👤 Claves Públicas de Contactos:")
+                    print("\nClaves Públicas de Contactos:")
                     for a in aliases["claves_publicas"]:
                         print(f"  - {a}")
                     imprimir_exito("Alias listados correctamente.")
@@ -377,13 +376,13 @@ def menu_interactivo():
                 imprimir_error("Opción de submenú inválida.")
                 
         elif opcion == "12":
-            print("\n¡Hasta luego! Mantente seguro. 🔒")
+            print("\n¡Hasta luego! Mantente seguro.")
             break
         else:
             imprimir_error("Opción inválida.")
-
+ 
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.2 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.3 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -608,11 +607,11 @@ def main():
             aliases = ks.listar_alias()
             imprimir_exito("Alias del llavero recuperados.", args.json, {"aliases": aliases})
             if not args.json:
-                print("\n🔐 --- ALIAS EN LLAVERO ---")
-                print("🔑 Claves Privadas Propias:")
+                print("\n--- ALIAS EN LLAVERO ---")
+                print("Claves Privadas Propias:")
                 for a in aliases["claves_privadas"]:
                     print(f"  - {a}")
-                print("\n👤 Claves Públicas de Contactos:")
+                print("\nClaves Públicas de Contactos:")
                 for a in aliases["claves_publicas"]:
                     print(f"  - {a}")
         except Exception as e:

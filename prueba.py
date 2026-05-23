@@ -1025,7 +1025,7 @@ def test_keystore_cli():
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.2")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.3")
     print("=" * 75)
     
     # Importación local para test de Keystore
@@ -1073,7 +1073,7 @@ def main():
         # Tests v1.0.2
         test_keystore_cli()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.2 PASARON EXITOSAMENTE!")
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.3 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
