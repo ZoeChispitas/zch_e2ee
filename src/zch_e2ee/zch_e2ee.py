@@ -4,6 +4,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding, x25519
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 def generar_llaves(tamanio_clave: int = 2048):
     """
@@ -292,4 +293,122 @@ def derivar_clave_compartida(clave_privada_propia, clave_publica_destinatario) -
     ).derive(secreto_compartido)
     
     return clave_derivada
+
+def encriptar_con_password(mensaje: str, password: str) -> str:
+    """
+    Cifra un mensaje de texto usando una contraseña tradicional (cifrado simétrico).
+    Deriva la clave de 256 bits usando Scrypt, y cifra con AES-GCM.
+    Retorna un payload codificado en Base64.
+    """
+    datos_mensaje = mensaje.encode('utf-8')
+    
+    # Generar sal y nonce aleatorios
+    sal = os.urandom(16)
+    nonce = os.urandom(12)
+    
+    # Derivar clave AES con Scrypt
+    kdf = Scrypt(
+        salt=sal,
+        length=32,
+        n=2**14,
+        r=8,
+        p=1
+    )
+    clave_aes = kdf.derive(password.encode('utf-8'))
+    
+    # Cifrar usando AES-GCM
+    aesgcm = AESGCM(clave_aes)
+    texto_cifrado = aesgcm.encrypt(nonce, datos_mensaje, None)
+    
+    # Empaquetar: [sal (16 bytes)] + [nonce (12 bytes)] + [texto_cifrado]
+    paquete = sal + nonce + texto_cifrado
+    return base64.b64encode(paquete).decode('utf-8')
+
+def desencriptar_con_password(payload_b64: str, password: str) -> str:
+    """
+    Descifra un mensaje cifrado con contraseña usando Scrypt y AES-GCM.
+    """
+    paquete = base64.b64decode(payload_b64.encode('utf-8'))
+    
+    tamanio_sal = 16
+    tamanio_nonce = 12
+    
+    # Extraer componentes
+    sal = paquete[:tamanio_sal]
+    nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
+    texto_cifrado = paquete[tamanio_sal + tamanio_nonce:]
+    
+    # Derivar la misma clave usando la sal extraida
+    kdf = Scrypt(
+        salt=sal,
+        length=32,
+        n=2**14,
+        r=8,
+        p=1
+    )
+    clave_aes = kdf.derive(password.encode('utf-8'))
+    
+    # Descifrar usando AES-GCM
+    aesgcm = AESGCM(clave_aes)
+    datos_mensaje = aesgcm.decrypt(nonce, texto_cifrado, None)
+    
+    return datos_mensaje.decode('utf-8')
+
+def encriptar_y_firmar_e2ee(mensaje: str, clave_publica_destinatario, clave_privada_emisor) -> str:
+    """
+    Cifra el mensaje para el destinatario (E2EE híbrido) y firma digitalmente
+    el resultado con la clave privada del emisor. 
+    Retorna el paquete completo (firma + mensaje cifrado) en Base64.
+    """
+    # 1. Cifrar usando la funcion base (genera un string base64)
+    payload_cifrado_b64 = encriptar_e2ee(mensaje, clave_publica_destinatario)
+    paquete_cifrado_bytes = base64.b64decode(payload_cifrado_b64.encode('utf-8'))
+    
+    # 2. Firmar los bytes cifrados (Encrypt-then-Sign) con la privada del emisor
+    firma = clave_privada_emisor.sign(
+        paquete_cifrado_bytes,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    
+    # 3. Empaquetar: [firma (256 bytes)] + [mensaje_cifrado_bytes]
+    paquete_final = firma + paquete_cifrado_bytes
+    return base64.b64encode(paquete_final).decode('utf-8')
+
+def desencriptar_y_verificar_e2ee(payload_b64: str, clave_privada_destinatario, clave_publica_emisor) -> tuple[str, bool]:
+    """
+    Descifra un mensaje y verifica si la firma del emisor es valida.
+    Retorna una tupla: (mensaje_desencriptado, firma_es_valida).
+    """
+    paquete_final = base64.b64decode(payload_b64.encode('utf-8'))
+    
+    tamanio_firma = 256 # Para RSA-2048 la firma mide 256 bytes
+    
+    # 1. Extraer firma y paquete cifrado
+    firma = paquete_final[:tamanio_firma]
+    paquete_cifrado_bytes = paquete_final[tamanio_firma:]
+    
+    # 2. Verificar la firma del emisor contra el texto cifrado
+    try:
+        clave_publica_emisor.verify(
+            firma,
+            paquete_cifrado_bytes,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+        firma_valida = True
+    except Exception:
+        firma_valida = False
+        
+    # 3. Descifrar el mensaje
+    payload_cifrado_b64 = base64.b64encode(paquete_cifrado_bytes).decode('utf-8')
+    mensaje = desencriptar_e2ee(payload_cifrado_b64, clave_privada_destinatario)
+    
+    return mensaje, firma_valida
 

@@ -15,5 +15,9 @@ from .zch_e2ee import (
     encriptar_archivo_e2ee,
     desencriptar_archivo_e2ee,
     generar_llaves_ec,
-    derivar_clave_compartida
+    derivar_clave_compartida,
+    encriptar_con_password,
+    desencriptar_con_password,
+    encriptar_y_firmar_e2ee,
+    desencriptar_y_verificar_e2ee
 )
