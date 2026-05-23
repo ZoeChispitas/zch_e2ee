@@ -30,6 +30,36 @@ class ErrorClave(CriptoError):
     pass
 
 # =====================================================================
+# AUXILIARES INTERNOS
+# =====================================================================
+
+def _obtener_huella_publica(clave_publica) -> bytes:
+    """
+    Calcula una huella digital SHA-256 de 8 bytes de una clave pública (RSA o X25519).
+    """
+    try:
+        if isinstance(clave_publica, rsa.RSAPublicKey):
+            pem = clave_publica.public_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+        elif isinstance(clave_publica, x25519.X25519PublicKey):
+            pem = clave_publica.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw
+            )
+        else:
+            raise ErrorClave("Clave pública no soportada (debe ser RSA o X25519).")
+        
+        digest = hashes.Hash(hashes.SHA256())
+        digest.update(pem)
+        return digest.finalize()[:8]
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise ErrorClave(f"Error al calcular la huella de clave pública: {e}")
+
+# =====================================================================
 # APARTADO RSA: LLAVES, SERIALIZACIÓN Y HIGH-LEVEL E2EE
 # =====================================================================
 
@@ -835,6 +865,281 @@ def desencriptar_directorio_e2ee_ec(ruta_origen: str, ruta_directorio_destino: s
     finally:
         if os.path.exists(ruta_temp_zip):
             os.remove(ruta_temp_zip)
+
+# =====================================================================
+# NOVEDADES V0.9.0: CIFRADO MULTI-DESTINATARIO (RSA / X25519)
+# =====================================================================
+
+def encriptar_e2ee_multi(mensaje: str, claves_publicas: list) -> str:
+    """
+    Cifra un mensaje de texto para múltiples destinatarios (RSA o X25519).
+    Retorna un payload Base64 con la clave simétrica cifrada para cada destinatario.
+    """
+    try:
+        if not claves_publicas:
+            raise ErrorClave("Se requiere al menos una clave pública para encriptar.")
+            
+        datos_mensaje = zlib.compress(mensaje.encode('utf-8'))
+        clave_aes = AESGCM.generate_key(bit_length=256)
+        aesgcm = AESGCM(clave_aes)
+        nonce = os.urandom(12)
+        texto_cifrado = aesgcm.encrypt(nonce, datos_mensaje, None)
+        
+        primera_clave = claves_publicas[0]
+        es_ec = isinstance(primera_clave, x25519.X25519PublicKey)
+        
+        bloque_claves = bytearray()
+        
+        # Escribir número de destinatarios (2 bytes)
+        bloque_claves.extend(len(claves_publicas).to_bytes(2, byteorder='big'))
+        
+        # Escribir tipo de claves (1 byte): 0x01 = RSA, 0x02 = EC (X25519)
+        tipo_clave = 0x02 if es_ec else 0x01
+        bloque_claves.append(tipo_clave)
+        
+        for pub_key in claves_publicas:
+            huella = _obtener_huella_publica(pub_key)
+            bloque_claves.extend(huella)
+            
+            if es_ec:
+                priv_efimera = x25519.X25519PrivateKey.generate()
+                pub_efimera = priv_efimera.public_key()
+                secreto = derivar_clave_compartida(priv_efimera, pub_key)
+                
+                nonce_ec = os.urandom(12)
+                aesgcm_ec = AESGCM(secreto)
+                clave_aes_encriptada = aesgcm_ec.encrypt(nonce_ec, clave_aes, None)
+                
+                pub_efimera_bytes = pub_efimera.public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw
+                )
+                
+                bloque_destinatario = pub_efimera_bytes + nonce_ec + clave_aes_encriptada
+                bloque_claves.extend(len(bloque_destinatario).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(bloque_destinatario)
+            else:
+                clave_aes_encriptada = pub_key.encrypt(
+                    clave_aes,
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+                bloque_claves.extend(len(clave_aes_encriptada).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(clave_aes_encriptada)
+                
+        paquete_completo = bytes(bloque_claves) + nonce + texto_cifrado
+        return base64.b64encode(paquete_completo).decode('utf-8')
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise CriptoError(f"Error al encriptar multi-destinatario: {e}")
+
+def desencriptar_e2ee_multi(payload_b64: str, clave_privada_destinatario) -> str:
+    """
+    Descifra un mensaje cifrado para múltiples destinatarios usando la clave privada correspondiente.
+    """
+    try:
+        paquete = base64.b64decode(payload_b64.encode('utf-8'))
+        
+        num_dest = int.from_bytes(paquete[:2], byteorder='big')
+        tipo_clave = paquete[2]
+        
+        clave_publica_propia = clave_privada_destinatario.public_key()
+        huella_propia = _obtener_huella_publica(clave_publica_propia)
+        
+        offset = 3
+        clave_aes = None
+        
+        for _ in range(num_dest):
+            huella_recip = paquete[offset : offset + 8]
+            offset += 8
+            
+            tamanio_bloque = int.from_bytes(paquete[offset : offset + 2], byteorder='big')
+            offset += 2
+            
+            bloque_datos = paquete[offset : offset + tamanio_bloque]
+            offset += tamanio_bloque
+            
+            if huella_recip == huella_propia:
+                if tipo_clave == 0x02:
+                    pub_efimera_bytes = bloque_datos[:32]
+                    nonce_ec = bloque_datos[32 : 32 + 12]
+                    clave_aes_encriptada = bloque_datos[32 + 12:]
+                    
+                    pub_efimera = x25519.X25519PublicKey.from_public_bytes(pub_efimera_bytes)
+                    secreto = derivar_clave_compartida(clave_privada_destinatario, pub_efimera)
+                    
+                    aesgcm_ec = AESGCM(secreto)
+                    clave_aes = aesgcm_ec.decrypt(nonce_ec, clave_aes_encriptada, None)
+                else:
+                    clave_aes = clave_privada_destinatario.decrypt(
+                        bloque_datos,
+                        padding.OAEP(
+                            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                            algorithm=hashes.SHA256(),
+                            label=None
+                        )
+                    )
+        
+        if clave_aes is None:
+            raise ErrorDescifrado("La clave privada proporcionada no pertenece a ningún destinatario de este mensaje.")
+            
+        nonce = paquete[offset : offset + 12]
+        texto_cifrado = paquete[offset + 12:]
+        
+        aesgcm = AESGCM(clave_aes)
+        datos_comprimidos = aesgcm.decrypt(nonce, texto_cifrado, None)
+        datos_mensaje = zlib.decompress(datos_comprimidos)
+        return datos_mensaje.decode('utf-8')
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise ErrorDescifrado(f"Fallo al desencriptar el mensaje multi-destinatario: {e}")
+
+def encriptar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, claves_publicas: list):
+    """
+    Encripta un archivo completo para múltiples destinatarios (RSA o X25519).
+    Guarda el archivo resultante con cabecera ZCH v2 (Modo 0x06 para RSA, Modo 0x07 para EC).
+    """
+    try:
+        if not claves_publicas:
+            raise ErrorClave("Se requiere al menos una clave pública para encriptar.")
+            
+        with open(ruta_origen, 'rb') as f:
+            datos = f.read()
+            
+        datos_comprimidos = zlib.compress(datos)
+        clave_aes = AESGCM.generate_key(bit_length=256)
+        aesgcm = AESGCM(clave_aes)
+        nonce = os.urandom(12)
+        datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
+        
+        primera_clave = claves_publicas[0]
+        es_ec = isinstance(primera_clave, x25519.X25519PublicKey)
+        
+        bloque_claves = bytearray()
+        bloque_claves.extend(len(claves_publicas).to_bytes(2, byteorder='big'))
+        
+        tipo_clave = 0x02 if es_ec else 0x01
+        bloque_claves.append(tipo_clave)
+        
+        for pub_key in claves_publicas:
+            huella = _obtener_huella_publica(pub_key)
+            bloque_claves.extend(huella)
+            
+            if es_ec:
+                priv_efimera = x25519.X25519PrivateKey.generate()
+                pub_efimera = priv_efimera.public_key()
+                secreto = derivar_clave_compartida(priv_efimera, pub_key)
+                
+                nonce_ec = os.urandom(12)
+                aesgcm_ec = AESGCM(secreto)
+                clave_aes_encriptada = aesgcm_ec.encrypt(nonce_ec, clave_aes, None)
+                
+                pub_efimera_bytes = pub_efimera.public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw
+                )
+                
+                bloque_destinatario = pub_efimera_bytes + nonce_ec + clave_aes_encriptada
+                bloque_claves.extend(len(bloque_destinatario).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(bloque_destinatario)
+            else:
+                clave_aes_encriptada = pub_key.encrypt(
+                    clave_aes,
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+                bloque_claves.extend(len(clave_aes_encriptada).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(clave_aes_encriptada)
+                
+        modo = b"\x07" if es_ec else b"\x06"
+        cabecera = b"ZCH\x02" + modo
+        
+        with open(ruta_destino, 'wb') as f:
+            f.write(cabecera + bytes(bloque_claves) + nonce + datos_cifrados)
+    except Exception as e:
+        raise CriptoError(f"Error al encriptar archivo multi-destinatario: {e}")
+
+def desencriptar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, clave_privada_destinatario):
+    """
+    Desencripta un archivo cifrado para múltiples destinatarios usando la clave privada correspondiente.
+    """
+    try:
+        with open(ruta_origen, 'rb') as f:
+            paquete_final = f.read()
+            
+        if not paquete_final.startswith(b"ZCH\x02"):
+            raise ErrorDescifrado("El archivo no contiene la cabecera válida ZCH v2.")
+            
+        modo = paquete_final[4]
+        if modo not in (0x06, 0x07):
+            raise ErrorClave(f"Modo de cifrado inesperado en archivo multi-destinatario: {modo}")
+            
+        paquete = paquete_final[5:]
+        
+        num_dest = int.from_bytes(paquete[:2], byteorder='big')
+        tipo_clave = paquete[2]
+        
+        clave_publica_propia = clave_privada_destinatario.public_key()
+        huella_propia = _obtener_huella_publica(clave_publica_propia)
+        
+        offset = 3
+        clave_aes = None
+        
+        for _ in range(num_dest):
+            huella_recip = paquete[offset : offset + 8]
+            offset += 8
+            
+            tamanio_bloque = int.from_bytes(paquete[offset : offset + 2], byteorder='big')
+            offset += 2
+            
+            bloque_datos = paquete[offset : offset + tamanio_bloque]
+            offset += tamanio_bloque
+            
+            if huella_recip == huella_propia:
+                if tipo_clave == 0x02:
+                    pub_efimera_bytes = bloque_datos[:32]
+                    nonce_ec = bloque_datos[32 : 32 + 12]
+                    clave_aes_encriptada = bloque_datos[32 + 12:]
+                    
+                    pub_efimera = x25519.X25519PublicKey.from_public_bytes(pub_efimera_bytes)
+                    secreto = derivar_clave_compartida(clave_privada_destinatario, pub_efimera)
+                    
+                    aesgcm_ec = AESGCM(secreto)
+                    clave_aes = aesgcm_ec.decrypt(nonce_ec, clave_aes_encriptada, None)
+                else:
+                    clave_aes = clave_privada_destinatario.decrypt(
+                        bloque_datos,
+                        padding.OAEP(
+                            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                            algorithm=hashes.SHA256(),
+                            label=None
+                        )
+                    )
+        
+        if clave_aes is None:
+            raise ErrorDescifrado("La clave privada proporcionada no pertenece a ningún destinatario de este archivo.")
+            
+        nonce = paquete[offset : offset + 12]
+        datos_cifrados = paquete[offset + 12:]
+        
+        aesgcm = AESGCM(clave_aes)
+        datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+        datos_originales = zlib.decompress(datos_comprimidos)
+        
+        with open(ruta_destino, 'wb') as f:
+            f.write(datos_originales)
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise ErrorDescifrado(f"Fallo al descifrar archivo multi-destinatario: {e}")
 
 # =====================================================================
 # APARTADO CONTRASEÑA TRADICIONAL (SIMÉTRICA - SCRYPT + AES-GCM)

@@ -53,6 +53,12 @@ from .zch_e2ee import (
     encriptar_directorio_e2ee_ec,
     desencriptar_directorio_e2ee_ec,
     
+    # Multi-destinatario (RSA / X25519)
+    encriptar_e2ee_multi,
+    desencriptar_e2ee_multi,
+    encriptar_archivo_e2ee_multi,
+    desencriptar_archivo_e2ee_multi,
+    
     # Password (Simétrico)
     encriptar_con_password,
     desencriptar_con_password,

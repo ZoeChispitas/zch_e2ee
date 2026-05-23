@@ -252,10 +252,6 @@ def test_encriptacion_directorios():
         
     print("  [OK] Test de directorios completado con exito.")
 
-# =====================================================================
-# NUEVOS TESTS DE LA VERSIÓN 0.8.0
-# =====================================================================
-
 def test_excepciones_cripto():
     print("\n--- TEST: Excepciones Criptográficas Propias ---")
     privada_alice, publica_alice = zch_e2ee.generar_llaves()
@@ -263,7 +259,6 @@ def test_excepciones_cripto():
     
     # 1. Error de Descifrado RSA E2EE
     payload = zch_e2ee.encriptar_e2ee("Mensaje ultra secreto", publica_alice)
-    # Intentamos desencriptar con la llave incorrecta (privada_bob en lugar de privada_alice)
     try:
         zch_e2ee.desencriptar_e2ee(payload, privada_bob)
         assert False, "Debió lanzar ErrorDescifrado por llave incorrecta."
@@ -471,11 +466,6 @@ def test_directorio_password():
 
 def test_compatibilidad_retroactiva():
     print("\n--- TEST: Compatibilidad Retroactiva con Archivos Legacy v1 ---")
-    # Este test comprueba que archivos cifrados con zch-e2ee v0.7.0 (sin cabecera mágica ZCH\x02)
-    # aún pueden ser descifrados correctamente.
-    
-    # 1. Crear archivo legacy cifrado con contraseña (sin cabecera)
-    # Recordando que el formato legacy simétrico era: [sal (16 bytes)] + [nonce (12 bytes)] + [datos_cifrados]
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
     import zlib
@@ -496,13 +486,11 @@ def test_compatibilidad_retroactiva():
     with open(archivo_legacy, "wb") as f:
         f.write(sal + nonce + datos_cifrados)
         
-    # Intentar descifrar con el nuevo código (debe autodetectar la falta de cabecera y usar el lector legacy)
     zch_e2ee.desencriptar_archivo_con_password(archivo_legacy, archivo_recup, password)
     
     with open(archivo_recup, "r") as f:
         assert f.read() == contenido, "El archivo legacy no se descifró correctamente."
         
-    # Limpiar
     for f in [archivo_legacy, archivo_recup]:
         if os.path.exists(f):
             os.remove(f)
@@ -510,12 +498,118 @@ def test_compatibilidad_retroactiva():
     print("  [OK] Test de compatibilidad retroactiva legacy v1 completado.")
 
 # =====================================================================
+# NOVEDADES DE LA VERSIÓN 0.9.0
+# =====================================================================
+
+def test_e2ee_multi_rsa():
+    print("\n--- TEST: Cifrado Multi-destinatario RSA ---")
+    priv_alice, pub_alice = zch_e2ee.generar_llaves()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves()
+    priv_charlie, pub_charlie = zch_e2ee.generar_llaves()
+    
+    mensaje = "Hola a todos, este es un mensaje confidencial de grupo (RSA)."
+    claves_publicas = [pub_alice, pub_bob, pub_charlie]
+    
+    payload = zch_e2ee.encriptar_e2ee_multi(mensaje, claves_publicas)
+    print(f"  Cifrado Base64: {payload[:50]}...")
+    
+    # Cada uno intenta descifrar con su propia llave privada
+    msg_alice = zch_e2ee.desencriptar_e2ee_multi(payload, priv_alice)
+    msg_bob = zch_e2ee.desencriptar_e2ee_multi(payload, priv_bob)
+    msg_charlie = zch_e2ee.desencriptar_e2ee_multi(payload, priv_charlie)
+    
+    assert msg_alice == mensaje
+    assert msg_bob == mensaje
+    assert msg_charlie == mensaje
+    print("  [OK] Alice, Bob y Charlie pudieron descifrar el mensaje correctamente.")
+
+def test_e2ee_multi_ec():
+    print("\n--- TEST: Cifrado Multi-destinatario EC (X25519) ---")
+    priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+    priv_charlie, pub_charlie = zch_e2ee.generar_llaves_ec()
+    
+    mensaje = "Mensaje cifrado con curvas elípticas para múltiples destinatarios."
+    claves_publicas = [pub_alice, pub_bob, pub_charlie]
+    
+    payload = zch_e2ee.encriptar_e2ee_multi(mensaje, claves_publicas)
+    print(f"  Cifrado Base64: {payload[:50]}...")
+    
+    # Cada uno intenta descifrar
+    msg_alice = zch_e2ee.desencriptar_e2ee_multi(payload, priv_alice)
+    msg_bob = zch_e2ee.desencriptar_e2ee_multi(payload, priv_bob)
+    msg_charlie = zch_e2ee.desencriptar_e2ee_multi(payload, priv_charlie)
+    
+    assert msg_alice == mensaje
+    assert msg_bob == mensaje
+    assert msg_charlie == mensaje
+    print("  [OK] Descifrado EC exitoso para todos los miembros del grupo.")
+
+def test_e2ee_multi_errores():
+    print("\n--- TEST: Control de Errores en Cifrado Multi-destinatario ---")
+    priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+    priv_intruder, pub_intruder = zch_e2ee.generar_llaves_ec()
+    
+    mensaje = "Este mensaje es solo para Alice y Bob."
+    payload = zch_e2ee.encriptar_e2ee_multi(mensaje, [pub_alice, pub_bob])
+    
+    try:
+        zch_e2ee.desencriptar_e2ee_multi(payload, priv_intruder)
+        assert False, "Debió fallar con ErrorDescifrado"
+    except zch_e2ee.ErrorDescifrado as e:
+        print(f"  [OK] El intruso falló al descifrar como se esperaba: {e}")
+        
+    print("  [OK] Test completado con éxito.")
+
+def test_archivo_multi():
+    print("\n--- TEST: Cifrado de Archivos Multi-destinatario ---")
+    priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+    
+    archivo_orig = "doc_grupo.txt"
+    archivo_cifr = "doc_grupo.enc"
+    archivo_desc = "doc_grupo_desc.txt"
+    
+    contenido = "Este archivo contiene el acta de la reunión confidencial de la junta."
+    with open(archivo_orig, "w", encoding="utf-8") as f:
+        f.write(contenido)
+        
+    # Cifrar para Alice y Bob
+    zch_e2ee.encriptar_archivo_e2ee_multi(archivo_orig, archivo_cifr, [pub_alice, pub_bob])
+    print(f"  Archivo cifrado creado: '{archivo_cifr}'")
+    
+    # Comprobar cabecera mágica v2 Modo 0x07 (EC Multi)
+    with open(archivo_cifr, "rb") as f:
+        cabecera = f.read(5)
+        assert cabecera == b"ZCH\x02\x07", "La cabecera del archivo multi EC no es la esperada v2 Modo 0x07."
+        
+    # Bob descifra
+    zch_e2ee.desencriptar_archivo_e2ee_multi(archivo_cifr, archivo_desc, priv_bob)
+    with open(archivo_desc, "r", encoding="utf-8") as f:
+        res = f.read()
+    assert res == contenido
+    
+    # Alice descifra
+    zch_e2ee.desencriptar_archivo_e2ee_multi(archivo_cifr, archivo_desc, priv_alice)
+    with open(archivo_desc, "r", encoding="utf-8") as f:
+        res = f.read()
+    assert res == contenido
+    
+    # Limpiar
+    for f in [archivo_orig, archivo_cifr, archivo_desc]:
+        if os.path.exists(f):
+            os.remove(f)
+            
+    print("  [OK] Test de archivos multi-destinatario completado con éxito.")
+
+# =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.8.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v0.9.0")
     print("=" * 75)
     
     try:
@@ -529,7 +623,7 @@ def main():
         test_rsa_4096_bits()
         test_encriptacion_directorios()
         
-        # Tests Nuevos v0.8.0
+        # Tests v0.8.0
         test_excepciones_cripto()
         test_firmas_ed25519()
         test_serializacion_llaves_ec()
@@ -538,7 +632,13 @@ def main():
         test_directorio_password()
         test_compatibilidad_retroactiva()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V0.8.0 PASARON EXITOSAMENTE!")
+        # Tests v0.9.0
+        test_e2ee_multi_rsa()
+        test_e2ee_multi_ec()
+        test_e2ee_multi_errores()
+        test_archivo_multi()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V0.9.0 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         print(f"\n[ERROR] Fallo en la validacion: {e}")
     except Exception as e:
