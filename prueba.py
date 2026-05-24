@@ -7,6 +7,7 @@ import time
 import json
 import subprocess
 import zlib
+import importlib
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -808,7 +809,7 @@ def test_encrypted_importer():
     
     # Importar modulo en memoria
     try:
-        import modulo_test_import
+        modulo_test_import = importlib.import_module("modulo_test_import")
         
         # Validar funcionamiento de funciones internas
         saludo = modulo_test_import.saludar()
@@ -1024,7 +1025,7 @@ def test_keystore_cli():
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.5")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.6")
     print("=" * 75)
     
     try:
@@ -1068,7 +1069,7 @@ def main():
         # Tests v1.0.2
         test_keystore_cli()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.5 PASARON EXITOSAMENTE!")
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.6 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
