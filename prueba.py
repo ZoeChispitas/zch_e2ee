@@ -3,6 +3,14 @@ import os
 sys.path.insert(0, os.path.abspath('src'))
 import shutil
 import base64
+import time
+import json
+import subprocess
+import zlib
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+from zch_e2ee.importer import EncryptedModuleFinder
 import zch_e2ee
 
 def test_cifrado_password():
@@ -469,9 +477,6 @@ def test_directorio_password():
 
 def test_compatibilidad_retroactiva():
     print("\n--- TEST: Compatibilidad Retroactiva con Archivos Legacy v1 ---")
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-    import zlib
     
     contenido = "Texto en formato legacy sin cabecera de Zoe."
     password = "LegacyPassword1"
@@ -769,7 +774,6 @@ def test_hmac_autenticacion():
 
 def test_encrypted_importer():
     print("\n--- TEST: Importador de Módulos Python Cifrados ---")
-    import sys
     
     # Definir nombres y rutas
     nombre_modulo = "modulo_test_import"
@@ -821,7 +825,6 @@ def test_encrypted_importer():
             os.remove(archivo_enc)
             
         # Remover el buscador para no contaminar el sys.meta_path
-        from zch_e2ee.importer import EncryptedModuleFinder
         sys.meta_path = [f for f in sys.meta_path if not isinstance(f, EncryptedModuleFinder)]
         
         # Quitar el módulo de sys.modules para permitir re-importaciones limpias en pruebas
@@ -902,7 +905,6 @@ def test_keystore_listar_alias():
 
 def test_shamir_optimizado_stress():
     print("\n--- TEST: Stress de Shamir y Verificación de Aritmética GF(256) (v1.0.1) ---")
-    import time
     
     secreto = b"Secreto Super Secreto para test de stress en GF(256)"
     
@@ -923,9 +925,6 @@ def test_shamir_optimizado_stress():
 
 def test_keystore_cli():
     print("\n--- TEST: Comandos CLI de Llavero Criptográfico (v1.0.2) ---")
-    import subprocess
-    import sys
-    import json
     
     ruta_ks = "cli_keystore.json"
     pwd = "CliMasterPassword123!"
@@ -1025,12 +1024,8 @@ def test_keystore_cli():
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.4")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.5")
     print("=" * 75)
-    
-    # Importación local para test de Keystore
-    global serialization
-    from cryptography.hazmat.primitives import serialization
     
     try:
         # Tests Heredados/Clásicos
@@ -1073,7 +1068,7 @@ def main():
         # Tests v1.0.2
         test_keystore_cli()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.4 PASARON EXITOSAMENTE!")
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.5 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
