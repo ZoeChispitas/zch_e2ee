@@ -5,6 +5,62 @@ import argparse
 import base64
 import tempfile
 import zch_e2ee
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
+
+def serializar_sesion_ratchet(sesion):
+    dhp_pem = sesion.dhp.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
+    
+    dhr_raw = sesion.dhr.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    ).hex()
+    
+    dh_local_pem = sesion.dh_local.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
+    
+    last_dh_remota_raw = None
+    if sesion.last_dh_remota:
+        last_dh_remota_raw = sesion.last_dh_remota.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        ).hex()
+        
+    return {
+        "dhp_pem": dhp_pem,
+        "dhr_raw": dhr_raw,
+        "es_iniciador": sesion.es_iniciador,
+        "dh_local_pem": dh_local_pem,
+        "rk_hex": sesion.rk.hex(),
+        "ck_send_hex": sesion.ck_send.hex() if sesion.ck_send else None,
+        "ck_recv_hex": sesion.ck_recv.hex() if sesion.ck_recv else None,
+        "last_dh_remota_raw": last_dh_remota_raw
+    }
+
+def deserializar_sesion_ratchet(data):
+    dhp = serialization.load_pem_private_key(data["dhp_pem"].encode('utf-8'), password=None)
+    dhr = x25519.X25519PublicKey.from_public_bytes(bytes.fromhex(data["dhr_raw"]))
+    
+    sesion = zch_e2ee.SesionDoubleRatchet(dhp, dhr, data["es_iniciador"])
+    
+    sesion.dh_local = serialization.load_pem_private_key(data["dh_local_pem"].encode('utf-8'), password=None)
+    sesion.rk = bytes.fromhex(data["rk_hex"])
+    sesion.ck_send = bytes.fromhex(data["ck_send_hex"]) if data["ck_send_hex"] else None
+    sesion.ck_recv = bytes.fromhex(data["ck_recv_hex"]) if data["ck_recv_hex"] else None
+    
+    if data["last_dh_remota_raw"]:
+        sesion.last_dh_remota = x25519.X25519PublicKey.from_public_bytes(bytes.fromhex(data["last_dh_remota_raw"]))
+    else:
+        sesion.last_dh_remota = None
+        
+    return sesion
 
 def imprimir_exito(mensaje, json_mode=False, data_dict=None):
     if json_mode:
@@ -24,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.8)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.9)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -610,7 +666,7 @@ def menu_interactivo():
             imprimir_error("Opción inválida.")
  
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.8 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.9 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -745,6 +801,47 @@ def main():
     sub_ks_res.add_argument("--password", required=True, help="Contraseña maestra del llavero destino")
     sub_ks_res.add_argument("--in-backup", required=True, help="Ruta del archivo de respaldo a importar")
     sub_ks_res.add_argument("--backup-password", required=True, help="Contraseña de descifrado del archivo de respaldo")
+
+    # encrypt-dir
+    sub_enc_dir = subparsers.add_parser("encrypt-dir", help="Cifrar un directorio completo")
+    sub_enc_dir.add_argument("--in-dir", required=True, help="Directorio origen a cifrar")
+    sub_enc_dir.add_argument("--out-file", required=True, help="Archivo cifrado de salida")
+    sub_enc_dir.add_argument("--password", help="Cifrar con contraseña simétrica")
+    sub_enc_dir.add_argument("--key-rsa", help="Llave pública RSA para cifrar")
+    sub_enc_dir.add_argument("--key-ec", help="Llave pública X25519 para cifrar")
+
+    # decrypt-dir
+    sub_dec_dir = subparsers.add_parser("decrypt-dir", help="Descifrar un directorio completo")
+    sub_dec_dir.add_argument("--in-file", required=True, help="Archivo cifrado a descifrar")
+    sub_dec_dir.add_argument("--out-dir", required=True, help="Directorio destino para extraer")
+    sub_dec_dir.add_argument("--password", help="Descifrar usando contraseña")
+    sub_dec_dir.add_argument("--key-rsa", help="Llave privada RSA para descifrar")
+    sub_dec_dir.add_argument("--key-ec", help="Llave privada X25519 para descifrar")
+    sub_dec_dir.add_argument("--key-password", help="Contraseña de la llave privada PEM si está cifrada")
+
+    # ratchet-init
+    sub_rat_init = subparsers.add_parser("ratchet-init", help="Inicializar un archivo de sesión Double Ratchet")
+    sub_rat_init.add_argument("--key-private", required=True, help="Ruta de tu llave privada (.pem)")
+    sub_rat_init.add_argument("--key-public", required=True, help="Ruta de la llave pública (.pem) del destinatario")
+    sub_rat_init.add_argument("--initiator", action="store_true", help="Especificar si inicias la conversación")
+    sub_rat_init.add_argument("--out-session", required=True, help="Ruta del archivo de sesión JSON de salida")
+    sub_rat_init.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
+
+    # ratchet-encrypt
+    sub_rat_enc = subparsers.add_parser("ratchet-encrypt", help="Cifrar mensaje usando una sesión Double Ratchet activa")
+    sub_rat_enc.add_argument("--session", required=True, help="Ruta del archivo de sesión JSON")
+    sub_rat_enc.add_argument("--text", help="Texto del mensaje a cifrar")
+    sub_rat_enc.add_argument("--out-session", required=True, help="Ruta del archivo de sesión JSON actualizado")
+
+    # ratchet-decrypt
+    sub_rat_dec = subparsers.add_parser("ratchet-decrypt", help="Descifrar mensaje usando una sesión Double Ratchet activa")
+    sub_rat_dec.add_argument("--session", required=True, help="Ruta del archivo de sesión JSON")
+    sub_rat_dec.add_argument("--text", help="Mensaje cifrado en Base64")
+    sub_rat_dec.add_argument("--out-session", required=True, help="Ruta del archivo de sesión JSON actualizado")
+
+    # shamir-reconstruct
+    sub_sha_rec = subparsers.add_parser("shamir-reconstruct", help="Reconstruir un secreto de Shamir usando fragmentos en línea")
+    sub_sha_rec.add_argument("--shares", required=True, help="Lista de fragmentos separados por comas (formato: Indice-Base64)")
 
     # interactive
     subparsers.add_parser("interactive", help="Lanza el menú interactivo con formato de consola")
@@ -1241,6 +1338,154 @@ def main():
             imprimir_exito(f"Respaldo de Keystore restaurado correctamente en '{args.keystore}'.", args.json, {"keystore": args.keystore})
         except Exception as e:
             imprimir_error(f"Fallo al restaurar respaldo de Keystore: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "encrypt-dir":
+        try:
+            if args.password:
+                zch_e2ee.encriptar_directorio_con_password(args.in_dir, args.out_file, args.password)
+            elif args.key_rsa:
+                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_rsa)
+                zch_e2ee.encriptar_directorio_e2ee(args.in_dir, args.out_file, pub)
+            elif args.key_ec:
+                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_ec)
+                zch_e2ee.encriptar_directorio_e2ee_ec(args.in_dir, args.out_file, pub)
+            else:
+                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para cifrar.", args.json)
+                sys.exit(1)
+            imprimir_exito(f"Directorio cifrado guardado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
+        except Exception as e:
+            imprimir_error(f"Fallo al cifrar directorio: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "decrypt-dir":
+        try:
+            if args.password:
+                zch_e2ee.desencriptar_directorio_con_password(args.in_file, args.out_dir, args.password)
+            elif args.key_rsa:
+                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_rsa, args.key_password)
+                zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv)
+            elif args.key_ec:
+                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_ec, args.key_password)
+                zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv)
+            else:
+                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para descifrar.", args.json)
+                sys.exit(1)
+            imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
+        except Exception as e:
+            imprimir_error(f"Fallo al descifrar directorio: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "ratchet-init":
+        try:
+            priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
+            pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_public)
+            
+            sesion = zch_e2ee.SesionDoubleRatchet(priv, pub, args.initiator)
+            state = serializar_sesion_ratchet(sesion)
+            
+            with open(args.out_session, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
+                
+            imprimir_exito(f"Sesion Double Ratchet inicializada en '{args.out_session}'.", args.json, {"session_file": args.out_session})
+        except Exception as e:
+            imprimir_error(f"Fallo al inicializar sesion Double Ratchet: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "ratchet-encrypt":
+        try:
+            with open(args.session, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            sesion = deserializar_sesion_ratchet(state)
+            
+            if args.stdin:
+                mensaje = sys.stdin.read()
+            else:
+                if args.text is None:
+                    imprimir_error("Debe especificar --text o usar --stdin.", args.json)
+                    sys.exit(1)
+                mensaje = args.text
+                
+            cifrado = sesion.enviar_mensaje(mensaje)
+            
+            new_state = serializar_sesion_ratchet(sesion)
+            with open(args.out_session, 'w', encoding='utf-8') as f:
+                json.dump(new_state, f, indent=2)
+                
+            if args.json:
+                imprimir_exito("Mensaje cifrado con Double Ratchet.", args.json, {"cipher": cifrado, "out_session": args.out_session})
+            else:
+                if args.stdout:
+                    sys.stdout.write(cifrado)
+                else:
+                    print(cifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al cifrar con Double Ratchet: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "ratchet-decrypt":
+        try:
+            with open(args.session, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            sesion = deserializar_sesion_ratchet(state)
+            
+            if args.stdin:
+                texto_cifrado = sys.stdin.read()
+            else:
+                if args.text is None:
+                    imprimir_error("Debe especificar --text o usar --stdin.", args.json)
+                    sys.exit(1)
+                texto_cifrado = args.text
+                
+            descifrado = sesion.recibir_mensaje(texto_cifrado)
+            
+            new_state = serializar_sesion_ratchet(sesion)
+            with open(args.out_session, 'w', encoding='utf-8') as f:
+                json.dump(new_state, f, indent=2)
+                
+            if args.json:
+                imprimir_exito("Mensaje descifrado con Double Ratchet.", args.json, {"plain": descifrado, "out_session": args.out_session})
+            else:
+                if args.stdout:
+                    sys.stdout.write(descifrado)
+                else:
+                    print(descifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al descifrar con Double Ratchet: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "shamir-reconstruct":
+        try:
+            partes = []
+            for parte_str in args.shares.split(","):
+                parte_str = parte_str.strip()
+                if not parte_str:
+                    continue
+                try:
+                    idx_str, parte_b64 = parte_str.split("-", 1)
+                    idx = int(idx_str)
+                    datos = base64.b64decode(parte_b64.encode('utf-8'))
+                    partes.append((idx, datos))
+                except Exception:
+                    imprimir_error(f"Formato de parte invalido: '{parte_str}'. Debe ser 'Indice-Base64'.", args.json)
+                    sys.exit(1)
+            
+            if not partes:
+                imprimir_error("No se ingresaron partes validas.", args.json)
+                sys.exit(1)
+                
+            secreto_bytes = zch_e2ee.reconstruir_secreto_shamir(partes)
+            secreto_str = secreto_bytes.decode('utf-8', errors='ignore')
+            
+            if args.json:
+                imprimir_exito("Secreto reconstruido.", args.json, {"secret": secreto_str})
+            else:
+                if args.stdout:
+                    sys.stdout.write(secreto_str)
+                else:
+                    print(secreto_str)
+        except Exception as e:
+            imprimir_error(f"Fallo al reconstruir secreto de Shamir: {e}", args.json)
             sys.exit(1)
 
 if __name__ == "__main__":

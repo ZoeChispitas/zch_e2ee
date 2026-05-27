@@ -1245,13 +1245,168 @@ def test_nuevas_caracteristicas_v108():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.0.8 completadas con exito.")
 
+def test_nuevas_caracteristicas_v109():
+    print("\n--- TEST: Nuevas caracteristicas v1.0.9 (Encrypt/Decrypt Dir, Persistent Ratchet, Shamir Reconstruct) ---")
+    
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    # 1. Test encrypt-dir/decrypt-dir CLI
+    dir_orig = "v109_dir_orig"
+    dir_dest = "v109_dir_dest"
+    file_enc = "v109_dir.enc"
+    password = "DirectorioClave123!"
+    
+    # Clean up before
+    for path in [dir_orig, dir_dest]:
+        if os.path.exists(path):
+            shutil.rmtree(path)
+    if os.path.exists(file_enc):
+        os.remove(file_enc)
+        
+    try:
+        os.makedirs(dir_orig, exist_ok=True)
+        with open(os.path.join(dir_orig, "test.txt"), "w", encoding="utf-8") as f:
+            f.write("Prueba de cifrado de directorios v1.0.9")
+            
+        print("  Cifrando directorio via CLI...")
+        res_enc_dir = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-dir",
+            "--in-dir", dir_orig, "--out-file", file_enc, "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc_dir = json.loads(res_enc_dir.stdout)
+        assert out_enc_dir["status"] == "success"
+        assert os.path.exists(file_enc)
+        
+        print("  Descifrando directorio via CLI...")
+        res_dec_dir = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir",
+            "--in-file", file_enc, "--out-dir", dir_dest, "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_dir = json.loads(res_dec_dir.stdout)
+        assert out_dec_dir["status"] == "success"
+        assert os.path.exists(os.path.join(dir_dest, "test.txt"))
+        with open(os.path.join(dir_dest, "test.txt"), "r", encoding="utf-8") as f:
+            content = f.read()
+        assert content == "Prueba de cifrado de directorios v1.0.9"
+        print("    [OK] Cifrado y descifrado de directorio via CLI exitoso.")
+    finally:
+        for path in [dir_orig, dir_dest]:
+            if os.path.exists(path):
+                shutil.rmtree(path)
+        if os.path.exists(file_enc):
+            os.remove(file_enc)
+            
+    # 2. Test Shamir Reconstruction CLI
+    secreto = "secreto_v109"
+    partes = zch_e2ee.dividir_secreto_shamir(secreto.encode('utf-8'), n=3, t=2)
+    shares_str = ",".join(f"{idx}-{base64.b64encode(datos).decode('utf-8')}" for idx, datos in partes[:2])
+    
+    print("  Reconstruyendo secreto Shamir via CLI...")
+    res_shamir = subprocess.run([
+        sys.executable, "-m", "zch_e2ee", "--json", "shamir-reconstruct",
+        "--shares", shares_str
+    ], env=env_dict, capture_output=True, text=True, check=True)
+    out_shamir = json.loads(res_shamir.stdout)
+    assert out_shamir["status"] == "success"
+    assert out_shamir["secret"] == secreto
+    print("    [OK] Reconstruccion de Shamir via CLI exitosa.")
+    
+    # 3. Test Double Ratchet Session Persistence CLI
+    file_alice_priv = "v109_alice_priv.pem"
+    file_alice_pub = "v109_alice_pub.pem"
+    file_bob_priv = "v109_bob_priv.pem"
+    file_bob_pub = "v109_bob_pub.pem"
+    file_alice_session = "v109_alice_session.json"
+    file_bob_session = "v109_bob_session.json"
+    
+    for f in [file_alice_priv, file_alice_pub, file_bob_priv, file_bob_pub, file_alice_session, file_bob_session]:
+        if os.path.exists(f):
+            os.remove(f)
+            
+    try:
+        priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+        priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+        
+        zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_alice, file_alice_priv)
+        zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_alice, file_alice_pub)
+        zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_bob, file_bob_priv)
+        zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_bob, file_bob_pub)
+        
+        print("  Inicializando sesion de Alice via CLI...")
+        res_init_alice = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private", file_alice_priv, "--key-public", file_bob_pub,
+            "--initiator", "--out-session", file_alice_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_init_alice = json.loads(res_init_alice.stdout)
+        assert out_init_alice["status"] == "success"
+        
+        print("  Inicializando sesion de Bob via CLI...")
+        res_init_bob = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private", file_bob_priv, "--key-public", file_alice_pub,
+            "--out-session", file_bob_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_init_bob = json.loads(res_init_bob.stdout)
+        assert out_init_bob["status"] == "success"
+        
+        msg_alice = "Hola Bob, mensaje con persistencia v1.0.9"
+        print("  Alice cifra mensaje via CLI...")
+        res_enc_alice = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-encrypt",
+            "--session", file_alice_session, "--text", msg_alice,
+            "--out-session", file_alice_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc_alice = json.loads(res_enc_alice.stdout)
+        assert out_enc_alice["status"] == "success"
+        cifrado_alice = out_enc_alice["cipher"]
+        
+        print("  Bob descifra mensaje via CLI...")
+        res_dec_bob = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-decrypt",
+            "--session", file_bob_session, "--text", cifrado_alice,
+            "--out-session", file_bob_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_bob = json.loads(res_dec_bob.stdout)
+        assert out_dec_bob["status"] == "success"
+        assert out_dec_bob["plain"] == msg_alice
+        
+        msg_bob = "Hola Alice, recibido perfectamente"
+        print("  Bob cifra respuesta via CLI...")
+        res_enc_bob = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-encrypt",
+            "--session", file_bob_session, "--text", msg_bob,
+            "--out-session", file_bob_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc_bob = json.loads(res_enc_bob.stdout)
+        assert out_enc_bob["status"] == "success"
+        cifrado_bob = out_enc_bob["cipher"]
+        
+        print("  Alice descifra respuesta via CLI...")
+        res_dec_alice = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-decrypt",
+            "--session", file_alice_session, "--text", cifrado_bob,
+            "--out-session", file_alice_session
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_alice = json.loads(res_dec_alice.stdout)
+        assert out_dec_alice["status"] == "success"
+        assert out_dec_alice["plain"] == msg_bob
+        
+        print("    [OK] Double Ratchet persistente via CLI verificado correctamente.")
+    finally:
+        for f in [file_alice_priv, file_alice_pub, file_bob_priv, file_bob_pub, file_alice_session, file_bob_session]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.0.9 completadas con exito.")
+
 # =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.8")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.9")
     print("=" * 75)
     
     try:
@@ -1301,7 +1456,10 @@ def main():
         # Tests v1.0.8
         test_nuevas_caracteristicas_v108()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.8 PASARON EXITOSAMENTE!")
+        # Tests v1.0.9
+        test_nuevas_caracteristicas_v109()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.9 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
