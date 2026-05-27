@@ -24,7 +24,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.6)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.7)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -37,10 +37,13 @@ def menu_interactivo():
         print("  9. Reconstruir un secreto desde sus partes")
         print("  10. Cifrar un módulo Python (.py -> .py.enc)")
         print("  11. Gestionar llavero criptográfico (Keystore)")
-        print("  12. Salir")
+        print("  12. Cifrar o descifrar texto directo")
+        print("  13. Calcular o verificar hash SHA-256 de archivo")
+        print("  14. Calcular o verificar HMAC de archivo")
+        print("  15. Salir")
         print("=" * 70)
         
-        opcion = input("Selecciona una opción (1-12): ").strip()
+        opcion = input("Selecciona una opción (1-15): ").strip()
         
         if opcion == "1":
             print("\n--- Generar Llaves ---")
@@ -377,13 +380,153 @@ def menu_interactivo():
                 imprimir_error("Opción de submenú inválida.")
                 
         elif opcion == "12":
+            print("\n--- Cifrar o Descifrar Texto Directo ---")
+            print("  a. Cifrar texto")
+            print("  b. Descifrar texto")
+            sub_opc = input("Selecciona una opción (a/b): ").strip().lower()
+            
+            if sub_opc == "a":
+                texto = input("Ingresa el texto a cifrar: ")
+                print("  1. Contraseña simétrica (Scrypt)")
+                print("  2. Llave pública RSA")
+                print("  3. Llave pública X25519 (EC)")
+                metodo = input("Selecciona método de cifrado (1/2/3): ").strip()
+                
+                try:
+                    if metodo == "1":
+                        pwd = input("Contraseña de cifrado: ").strip()
+                        cifrado = zch_e2ee.encriptar_con_password(texto, pwd)
+                        print(f"\nTexto cifrado (Base64):\n{cifrado}")
+                        imprimir_exito("Texto cifrado correctamente.")
+                    elif metodo == "2":
+                        ruta_pub = input("Ruta de llave pública RSA (.pem): ").strip()
+                        pub = zch_e2ee.cargar_llave_publica_desde_archivo(ruta_pub)
+                        cifrado = zch_e2ee.encriptar_e2ee(texto, pub)
+                        print(f"\nTexto cifrado (Base64):\n{cifrado}")
+                        imprimir_exito("Texto cifrado correctamente.")
+                    elif metodo == "3":
+                        ruta_pub = input("Ruta de llave pública X25519 (.pem): ").strip()
+                        pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(ruta_pub)
+                        cifrado = zch_e2ee.encriptar_e2ee_ec(texto, pub)
+                        print(f"\nTexto cifrado (Base64):\n{cifrado}")
+                        imprimir_exito("Texto cifrado correctamente.")
+                    else:
+                        imprimir_error("Método inválido.")
+                except Exception as e:
+                    imprimir_error(f"Error al cifrar texto: {e}")
+
+            elif sub_opc == "b":
+                texto_cifrado = input("Ingresa el texto cifrado (Base64): ").strip()
+                print("  1. Contraseña simétrica")
+                print("  2. Llave privada RSA")
+                print("  3. Llave privada X25519 (EC)")
+                metodo = input("Selecciona método de descifrado (1/2/3): ").strip()
+                
+                try:
+                    if metodo == "1":
+                        pwd = input("Contraseña: ").strip()
+                        descifrado = zch_e2ee.desencriptar_con_password(texto_cifrado, pwd)
+                        print(f"\nTexto descifrado:\n{descifrado}")
+                        imprimir_exito("Texto descifrado correctamente.")
+                    elif metodo == "2":
+                        ruta_priv = input("Ruta de llave privada RSA (.pem): ").strip()
+                        pwd = input("Contraseña de la llave pem (Enter si no tiene): ").strip() or None
+                        priv = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv, pwd)
+                        descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
+                        print(f"\nTexto descifrado:\n{descifrado}")
+                        imprimir_exito("Texto descifrado correctamente.")
+                    elif metodo == "3":
+                        ruta_priv = input("Ruta de llave privada X25519 (.pem): ").strip()
+                        pwd = input("Contraseña de la llave pem (Enter si no tiene): ").strip() or None
+                        priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv, pwd)
+                        descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
+                        print(f"\nTexto descifrado:\n{descifrado}")
+                        imprimir_exito("Texto descifrado correctamente.")
+                    else:
+                        imprimir_error("Método inválido.")
+                except Exception as e:
+                    imprimir_error(f"Error al descifrar texto: {e}")
+            else:
+                imprimir_error("Opción de submenú inválida.")
+
+        elif opcion == "13":
+            print("\n--- Calcular o Verificar Hash SHA-256 de Archivo ---")
+            print("  a. Calcular hash SHA-256")
+            print("  b. Verificar hash SHA-256")
+            sub_opc = input("Selecciona una opción (a/b): ").strip().lower()
+            
+            ruta_archivo = input("Ruta del archivo: ").strip()
+            if not os.path.exists(ruta_archivo):
+                imprimir_error("El archivo no existe.")
+                continue
+                
+            try:
+                hash_val = zch_e2ee.calcular_sha256(ruta_archivo)
+                if sub_opc == "a":
+                    print(f"\nHash SHA-256: {hash_val}")
+                    imprimir_exito("Hash calculado correctamente.")
+                elif sub_opc == "b":
+                    expected = input("Ingresa el hash SHA-256 esperado (hex): ").strip()
+                    if hash_val.lower().strip() == expected.lower().strip():
+                        imprimir_exito("El checksum del archivo es valido.")
+                    else:
+                        imprimir_error("El checksum del archivo es invalido o el archivo fue modificado.")
+                else:
+                    imprimir_error("Opción de submenú inválida.")
+            except Exception as e:
+                imprimir_error(f"Fallo al procesar hash: {e}")
+
+        elif opcion == "14":
+            print("\n--- Calcular o Verificar HMAC de Archivo ---")
+            print("  a. Calcular HMAC-SHA256")
+            print("  b. Verificar HMAC-SHA256")
+            sub_opc = input("Selecciona una opción (a/b): ").strip().lower()
+            
+            ruta_archivo = input("Ruta del archivo: ").strip()
+            if not os.path.exists(ruta_archivo):
+                imprimir_error("El archivo no existe.")
+                continue
+                
+            key_str = input("Ingresa la clave/contraseña simétrica: ").strip()
+            if not key_str:
+                imprimir_error("La clave no puede estar vacía.")
+                continue
+                
+            try:
+                with open(ruta_archivo, 'rb') as f:
+                    datos = f.read()
+                key_bytes = key_str.encode('utf-8')
+                
+                if sub_opc == "a":
+                    hmac_bytes = zch_e2ee.calcular_hmac(datos, key_bytes)
+                    print(f"\nHMAC-SHA256 (hex): {hmac_bytes.hex()}")
+                    imprimir_exito("HMAC calculado correctamente.")
+                elif sub_opc == "b":
+                    expected_hex = input("Ingresa el HMAC esperado (hex): ").strip()
+                    try:
+                        expected_bytes = bytes.fromhex(expected_hex.strip())
+                    except ValueError:
+                        imprimir_error("El valor HMAC esperado debe ser hexadecimal válido.")
+                        continue
+                        
+                    es_valido = zch_e2ee.verificar_hmac(datos, expected_bytes, key_bytes)
+                    if es_valido:
+                        imprimir_exito("El HMAC es totalmente valido.")
+                    else:
+                        imprimir_error("El HMAC es invalido o el archivo fue modificado.")
+                else:
+                    imprimir_error("Opción de submenú inválida.")
+            except Exception as e:
+                imprimir_error(f"Fallo al procesar HMAC: {e}")
+
+        elif opcion == "15":
             print("\n¡Hasta luego! Mantente seguro.")
             break
         else:
             imprimir_error("Opción inválida.")
  
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.6 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.7 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -454,6 +597,41 @@ def main():
     sub_ks_export.add_argument("--out-pem", required=True, help="Ruta del archivo PEM de destino")
     sub_ks_export.add_argument("--type", choices=["private", "public"], required=True, help="Especificar si es clave pública o privada")
     sub_ks_export.add_argument("--key-password", help="Contraseña opcional para cifrar la clave privada PEM exportada")
+
+    # hash
+    sub_hash = subparsers.add_parser("hash", help="Calcular el hash SHA-256 de un archivo")
+    sub_hash.add_argument("--file", required=True, help="Ruta del archivo a procesar")
+
+    # hash-verify
+    sub_hash_ver = subparsers.add_parser("hash-verify", help="Verificar el hash SHA-256 de un archivo")
+    sub_hash_ver.add_argument("--file", required=True, help="Ruta del archivo a procesar")
+    sub_hash_ver.add_argument("--checksum", required=True, help="Checksum esperado en formato hex")
+
+    # encrypt-text
+    sub_enc_txt = subparsers.add_parser("encrypt-text", help="Cifrar un texto directo")
+    sub_enc_txt.add_argument("--text", help="Texto original a cifrar (omitir si se usa --stdin)")
+    sub_enc_txt.add_argument("--password", help="Cifrar con contraseña simétrica")
+    sub_enc_txt.add_argument("--key-rsa", help="Llave pública RSA para cifrar")
+    sub_enc_txt.add_argument("--key-ec", help="Llave pública X25519 para cifrar")
+
+    # decrypt-text
+    sub_dec_txt = subparsers.add_parser("decrypt-text", help="Descifrar un texto cifrado directo")
+    sub_dec_txt.add_argument("--text", help="Texto cifrado (Base64) a descifrar (omitir si se usa --stdin)")
+    sub_dec_txt.add_argument("--password", help="Descifrar usando contraseña")
+    sub_dec_txt.add_argument("--key-rsa", help="Llave privada RSA para descifrar")
+    sub_dec_txt.add_argument("--key-ec", help="Llave privada X25519 para descifrar")
+    sub_dec_txt.add_argument("--key-password", help="Contraseña de la llave privada PEM si está cifrada")
+
+    # hmac-calc
+    sub_hmac_calc = subparsers.add_parser("hmac-calc", help="Calcular el HMAC-SHA256 de un archivo")
+    sub_hmac_calc.add_argument("--file", required=True, help="Ruta del archivo a procesar")
+    sub_hmac_calc.add_argument("--key", required=True, help="Clave simétrica para calcular el HMAC")
+
+    # hmac-verify
+    sub_hmac_ver = subparsers.add_parser("hmac-verify", help="Verificar el HMAC-SHA256 de un archivo")
+    sub_hmac_ver.add_argument("--file", required=True, help="Ruta del archivo a procesar")
+    sub_hmac_ver.add_argument("--key", required=True, help="Clave simétrica usada para calcular el HMAC")
+    sub_hmac_ver.add_argument("--hmac", required=True, help="Valor de HMAC esperado en formato hex")
 
     # interactive
     subparsers.add_parser("interactive", help="Lanza el menú interactivo con formato de consola")
@@ -663,6 +841,140 @@ def main():
             imprimir_exito(f"Clave '{args.alias}' exportada con éxito en '{args.out_pem}'.", args.json, {"alias": args.alias, "out_pem": args.out_pem})
         except Exception as e:
             imprimir_error(f"Fallo al exportar clave: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "hash":
+        try:
+            hash_val = zch_e2ee.calcular_sha256(args.file)
+            if args.json:
+                imprimir_exito("Checksum calculado.", args.json, {"hash": hash_val})
+            else:
+                if args.stdout:
+                    sys.stdout.write(hash_val)
+                else:
+                    print(hash_val)
+        except Exception as e:
+            imprimir_error(f"Fallo al calcular hash: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "hash-verify":
+        try:
+            hash_val = zch_e2ee.calcular_sha256(args.file)
+            if hash_val.lower().strip() == args.checksum.lower().strip():
+                imprimir_exito("El checksum del archivo es valido.", args.json, {"valid": True})
+            else:
+                imprimir_error("El checksum del archivo es invalido o el archivo fue modificado.", args.json)
+                sys.exit(1)
+        except Exception as e:
+            imprimir_error(f"Fallo al verificar hash: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "encrypt-text":
+        try:
+            if args.stdin:
+                mensaje = sys.stdin.read()
+            else:
+                if args.text is None:
+                    imprimir_error("Debe especificar --text o usar --stdin.", args.json)
+                    sys.exit(1)
+                mensaje = args.text
+
+            cifrado = None
+            if args.password:
+                cifrado = zch_e2ee.encriptar_con_password(mensaje, args.password)
+            elif args.key_rsa:
+                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_rsa)
+                cifrado = zch_e2ee.encriptar_e2ee(mensaje, pub)
+            elif args.key_ec:
+                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_ec)
+                cifrado = zch_e2ee.encriptar_e2ee_ec(mensaje, pub)
+            else:
+                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para cifrar.", args.json)
+                sys.exit(1)
+
+            if args.json:
+                imprimir_exito("Texto cifrado.", args.json, {"cipher": cifrado})
+            else:
+                if args.stdout:
+                    sys.stdout.write(cifrado)
+                else:
+                    print(cifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al cifrar texto: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "decrypt-text":
+        try:
+            if args.stdin:
+                texto_cifrado = sys.stdin.read()
+            else:
+                if args.text is None:
+                    imprimir_error("Debe especificar --text o usar --stdin.", args.json)
+                    sys.exit(1)
+                texto_cifrado = args.text
+
+            descifrado = None
+            if args.password:
+                descifrado = zch_e2ee.desencriptar_con_password(texto_cifrado, args.password)
+            elif args.key_rsa:
+                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_rsa, args.key_password)
+                descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
+            elif args.key_ec:
+                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_ec, args.key_password)
+                descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
+            else:
+                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para descifrar.", args.json)
+                sys.exit(1)
+
+            if args.json:
+                imprimir_exito("Texto descifrado.", args.json, {"plain": descifrado})
+            else:
+                if args.stdout:
+                    sys.stdout.write(descifrado)
+                else:
+                    print(descifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al descifrar texto: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "hmac-calc":
+        try:
+            with open(args.file, 'rb') as f:
+                datos = f.read()
+            key_bytes = args.key.encode('utf-8')
+            hmac_bytes = zch_e2ee.calcular_hmac(datos, key_bytes)
+            hmac_hex = hmac_bytes.hex()
+
+            if args.json:
+                imprimir_exito("HMAC calculado.", args.json, {"hmac": hmac_hex})
+            else:
+                if args.stdout:
+                    sys.stdout.write(hmac_hex)
+                else:
+                    print(hmac_hex)
+        except Exception as e:
+            imprimir_error(f"Fallo al calcular HMAC: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "hmac-verify":
+        try:
+            with open(args.file, 'rb') as f:
+                datos = f.read()
+            key_bytes = args.key.encode('utf-8')
+            try:
+                expected_bytes = bytes.fromhex(args.hmac.strip())
+            except ValueError:
+                imprimir_error("El valor HMAC esperado debe ser una cadena hexadecimal valida.", args.json)
+                sys.exit(1)
+            
+            es_valido = zch_e2ee.verificar_hmac(datos, expected_bytes, key_bytes)
+            if es_valido:
+                imprimir_exito("El HMAC es totalmente valido.", args.json, {"valid": True})
+            else:
+                imprimir_error("El HMAC es invalido o el archivo fue modificado.", args.json)
+                sys.exit(1)
+        except Exception as e:
+            imprimir_error(f"Fallo al verificar HMAC: {e}", args.json)
             sys.exit(1)
 
 if __name__ == "__main__":

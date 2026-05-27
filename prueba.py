@@ -1019,13 +1019,145 @@ def test_keystore_cli():
                 
     print("  [OK] Pruebas de Keystore CLI completadas con éxito.")
 
+def test_nuevas_caracteristicas_v107():
+    print("\n--- TEST: Nuevas caracteristicas v1.0.7 (Checksum, Direct Text, HMAC) ---")
+    
+    # Archivos temporales para test
+    ruta_temp = "v107_test_file.txt"
+    with open(ruta_temp, "w", encoding="utf-8") as f:
+        f.write("Hola, esta es una prueba de integridad para la v1.0.7 sin emojis.")
+        
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    try:
+        # --- 1. Test hash y hash-verify CLI ---
+        print("  Calculando hash SHA-256 via CLI...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hash",
+            "--file", ruta_temp
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_data = json.loads(res.stdout)
+        assert out_data["status"] == "success"
+        expected_hash = out_data["hash"]
+        print(f"    Hash calculado: {expected_hash}")
+        
+        # Verificar hash-verify correcto
+        res_ver = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hash-verify",
+            "--file", ruta_temp, "--checksum", expected_hash
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_ver = json.loads(res_ver.stdout)
+        assert out_ver["status"] == "success"
+        assert out_ver["valid"] is True
+        print("    [OK] hash-verify exitoso para hash correcto.")
+        
+        # Verificar hash-verify incorrecto
+        res_fail = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hash-verify",
+            "--file", ruta_temp, "--checksum", "a" * 64
+        ], env=env_dict, capture_output=True, text=True)
+        assert res_fail.returncode != 0
+        out_fail = json.loads(res_fail.stderr)
+        assert out_fail["status"] == "error"
+        print("    [OK] hash-verify fallo correctamente para hash incorrecto.")
+        
+        # --- 2. Test encrypt-text y decrypt-text CLI ---
+        mensaje_original = "Mensaje directo de texto sin archivos intermedios."
+        password = "PasswordTexto123!"
+        
+        # Cifrado simétrico
+        print("  Cifrando texto con contrasena via CLI...")
+        res_enc = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text",
+            "--text", mensaje_original, "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc = json.loads(res_enc.stdout)
+        assert out_enc["status"] == "success"
+        texto_cifrado = out_enc["cipher"]
+        
+        # Descifrado simétrico
+        print("  Descifrando texto con contrasena via CLI...")
+        res_dec = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text",
+            "--text", texto_cifrado, "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec = json.loads(res_dec.stdout)
+        assert out_dec["status"] == "success"
+        assert out_dec["plain"] == mensaje_original
+        print("    [OK] Cifrado y descifrado de texto directo (Password) exitoso.")
+        
+        # Cifrado asimétrico RSA
+        print("  Generando llaves RSA para pruebas asimetricas de texto...")
+        priv_rsa, pub_rsa = zch_e2ee.generar_llaves(2048)
+        zch_e2ee.guardar_llave_privada_en_archivo(priv_rsa, "v107_rsa_priv.pem", "rsakey")
+        zch_e2ee.guardar_llave_publica_en_archivo(pub_rsa, "v107_rsa_pub.pem")
+        
+        print("  Cifrando texto con RSA via CLI...")
+        res_enc_rsa = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text",
+            "--text", mensaje_original, "--key-rsa", "v107_rsa_pub.pem"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc_rsa = json.loads(res_enc_rsa.stdout)
+        assert out_enc_rsa["status"] == "success"
+        texto_cifrado_rsa = out_enc_rsa["cipher"]
+        
+        print("  Descifrando texto con RSA via CLI...")
+        res_dec_rsa = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text",
+            "--text", texto_cifrado_rsa, "--key-rsa", "v107_rsa_priv.pem", "--key-password", "rsakey"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_rsa = json.loads(res_dec_rsa.stdout)
+        assert out_dec_rsa["status"] == "success"
+        assert out_dec_rsa["plain"] == mensaje_original
+        print("    [OK] Cifrado y descifrado de texto directo (RSA) exitoso.")
+        
+        # --- 3. Test hmac-calc y hmac-verify CLI ---
+        hmac_key = "ClaveHmacSegura123!"
+        print("  Calculando HMAC de archivo via CLI...")
+        res_hmac = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hmac-calc",
+            "--file", ruta_temp, "--key", hmac_key
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_hmac = json.loads(res_hmac.stdout)
+        assert out_hmac["status"] == "success"
+        hmac_hex = out_hmac["hmac"]
+        print(f"    HMAC calculado: {hmac_hex}")
+        
+        # Verificar hmac-verify correcto
+        res_hmac_ver = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hmac-verify",
+            "--file", ruta_temp, "--key", hmac_key, "--hmac", hmac_hex
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_hmac_ver = json.loads(res_hmac_ver.stdout)
+        assert out_hmac_ver["status"] == "success"
+        assert out_hmac_ver["valid"] is True
+        print("    [OK] hmac-verify exitoso para HMAC correcto.")
+        
+        # Verificar hmac-verify incorrecto
+        res_hmac_fail = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "hmac-verify",
+            "--file", ruta_temp, "--key", hmac_key, "--hmac", "f" * 64
+        ], env=env_dict, capture_output=True, text=True)
+        assert res_hmac_fail.returncode != 0
+        out_hmac_fail = json.loads(res_hmac_fail.stderr)
+        assert out_hmac_fail["status"] == "error"
+        print("    [OK] hmac-verify fallo correctamente para HMAC incorrecto.")
+        
+    finally:
+        # Limpieza de archivos temporales
+        for f in [ruta_temp, "v107_rsa_priv.pem", "v107_rsa_pub.pem"]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.0.7 completadas con exito.")
+
 # =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.6")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.7")
     print("=" * 75)
     
     try:
@@ -1069,7 +1201,10 @@ def main():
         # Tests v1.0.2
         test_keystore_cli()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.6 PASARON EXITOSAMENTE!")
+        # Tests v1.0.7
+        test_nuevas_caracteristicas_v107()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.7 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
