@@ -1728,6 +1728,46 @@ def desencriptar_directorio_e2ee(ruta_origen: str, ruta_directorio_destino: str,
         if os.path.exists(ruta_temp_zip):
             os.remove(ruta_temp_zip)
 
+def encriptar_directorio_e2ee_multi(ruta_directorio: str, ruta_destino: str, claves_publicas: list):
+    """
+    Comprime un directorio completo en un archivo temporal ZIP y luego lo cifra
+    para múltiples destinatarios usando sus llaves públicas (RSA o X25519).
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(ruta_temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for raiz, _, archivos in os.walk(ruta_directorio):
+                for archivo in archivos:
+                    ruta_completa = os.path.join(raiz, archivo)
+                    ruta_relativa = os.path.relpath(ruta_completa, ruta_directorio)
+                    zipf.write(ruta_completa, arcname=ruta_relativa)
+                    
+        encriptar_archivo_e2ee_multi(ruta_temp_zip, ruta_destino, claves_publicas)
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
+
+def desencriptar_directorio_e2ee_multi(ruta_origen: str, ruta_directorio_destino: str, clave_privada_destinatario):
+    """
+    Descifra un paquete cifrado multi-destinatario usando la llave privada correspondiente,
+    obtiene el archivo ZIP temporal y lo descomprime en la carpeta de destino.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        desencriptar_archivo_e2ee_multi(ruta_origen, ruta_temp_zip, clave_privada_destinatario)
+        os.makedirs(ruta_directorio_destino, exist_ok=True)
+        with zipfile.ZipFile(ruta_temp_zip, 'r') as zipf:
+            zipf.extractall(ruta_directorio_destino)
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
+
 # =====================================================================
 # NOVEDADES V1.0.0: CRIPTOGRAFÍA DE UMBRAL (SHAMIR), HMAC Y KEYSTORE
 # =====================================================================

@@ -1400,13 +1400,128 @@ def test_nuevas_caracteristicas_v109():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.0.9 completadas con exito.")
 
+def test_nuevas_caracteristicas_v110():
+    print("\n--- TEST: Nuevas caracteristicas v1.1.0 (Encrypt/Decrypt Dir Multi) ---")
+    
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    dir_orig = "v110_dir_orig"
+    dir_dest_alice = "v110_dir_dest_alice"
+    dir_dest_bob = "v110_dir_dest_bob"
+    file_enc = "v110_dir_multi.enc"
+    
+    file_alice_priv = "v110_alice_priv.pem"
+    file_alice_pub = "v110_alice_pub.pem"
+    file_bob_priv = "v110_bob_priv.pem"
+    file_bob_pub = "v110_bob_pub.pem"
+    
+    for d in [dir_orig, dir_dest_alice, dir_dest_bob]:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+    for f in [file_enc, file_alice_priv, file_alice_pub, file_bob_priv, file_bob_pub, "v110_ks.json"]:
+        if os.path.exists(f):
+            os.remove(f)
+            
+    try:
+        os.makedirs(dir_orig, exist_ok=True)
+        with open(os.path.join(dir_orig, "nota.txt"), "w", encoding="utf-8") as f:
+            f.write("Mensaje grupal confidencial en directorio v1.1.0")
+            
+        priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+        priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+        
+        zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_alice, file_alice_priv)
+        zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_alice, file_alice_pub)
+        zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_bob, file_bob_priv)
+        zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_bob, file_bob_pub)
+        
+        print("  Cifrando directorio para Alice y Bob via CLI...")
+        res_enc = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-dir-multi",
+            "--in-dir", dir_orig, "--out-file", file_enc,
+            "--keys-public", f"{file_alice_pub},{file_bob_pub}"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc = json.loads(res_enc.stdout)
+        assert out_enc["status"] == "success"
+        
+        print("  Alice descifra directorio via CLI...")
+        res_dec_alice = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir-multi",
+            "--in-file", file_enc, "--out-dir", dir_dest_alice,
+            "--key-private", file_alice_priv
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_alice = json.loads(res_dec_alice.stdout)
+        assert out_dec_alice["status"] == "success"
+        with open(os.path.join(dir_dest_alice, "nota.txt"), "r", encoding="utf-8") as f:
+            res_alice = f.read()
+        assert res_alice == "Mensaje grupal confidencial en directorio v1.1.0"
+        
+        print("  Bob descifra directorio via CLI...")
+        res_dec_bob = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir-multi",
+            "--in-file", file_enc, "--out-dir", dir_dest_bob,
+            "--key-private", file_bob_priv
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_bob = json.loads(res_dec_bob.stdout)
+        assert out_dec_bob["status"] == "success"
+        with open(os.path.join(dir_dest_bob, "nota.txt"), "r", encoding="utf-8") as f:
+            res_bob = f.read()
+        assert res_bob == "Mensaje grupal confidencial en directorio v1.1.0"
+        
+        print("    [OK] Cifrado y descifrado multi-destinatario con archivos PEM exitoso.")
+        
+        shutil.rmtree(dir_dest_alice)
+        shutil.rmtree(dir_dest_bob)
+        os.remove(file_enc)
+        
+        ks = zch_e2ee.KeystoreZCH.crear("v110_ks.json", "ClaveKS123!")
+        ks.guardar_clave_propia("alice_key", priv_alice)
+        ks.guardar_clave_propia("bob_key", priv_bob)
+        ks.guardar_clave_contacto("alice_contact", pub_alice)
+        ks.guardar_clave_contacto("bob_contact", pub_bob)
+        ks.guardar("v110_ks.json", "ClaveKS123!")
+        
+        print("  Cifrando directorio usando alias del Keystore via CLI...")
+        res_enc_ks = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-dir-multi",
+            "--in-dir", dir_orig, "--out-file", file_enc,
+            "--keys-aliases", "alice_contact,bob_contact",
+            "--keystore", "v110_ks.json", "--password", "ClaveKS123!"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc_ks = json.loads(res_enc_ks.stdout)
+        assert out_enc_ks["status"] == "success"
+        
+        print("  Alice descifra directorio usando alias del Keystore via CLI...")
+        res_dec_alice_ks = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir-multi",
+            "--in-file", file_enc, "--out-dir", dir_dest_alice,
+            "--key-alias", "alice_key",
+            "--keystore", "v110_ks.json", "--password", "ClaveKS123!"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec_alice_ks = json.loads(res_dec_alice_ks.stdout)
+        assert out_dec_alice_ks["status"] == "success"
+        with open(os.path.join(dir_dest_alice, "nota.txt"), "r", encoding="utf-8") as f:
+            assert f.read() == "Mensaje grupal confidencial en directorio v1.1.0"
+            
+        print("    [OK] Cifrado y descifrado multi-destinatario con Keystore exitoso.")
+        
+    finally:
+        for d in [dir_orig, dir_dest_alice, dir_dest_bob]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+        for f in [file_enc, file_alice_priv, file_alice_pub, file_bob_priv, file_bob_pub, "v110_ks.json"]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.0 completadas con exito.")
+
 # =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.9")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.0")
     print("=" * 75)
     
     try:
@@ -1459,7 +1574,10 @@ def main():
         # Tests v1.0.9
         test_nuevas_caracteristicas_v109()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.9 PASARON EXITOSAMENTE!")
+        # Tests v1.1.0
+        test_nuevas_caracteristicas_v110()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.0 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
