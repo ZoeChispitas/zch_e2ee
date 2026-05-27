@@ -1151,13 +1151,107 @@ def test_nuevas_caracteristicas_v107():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.0.7 completadas con exito.")
 
+def test_nuevas_caracteristicas_v108():
+    print("\n--- TEST: Nuevas caracteristicas v1.0.8 (Firma, Ratchet Sim, Keystore Backup/Restore) ---")
+    
+    ruta_temp = "v108_test_file.txt"
+    with open(ruta_temp, "w", encoding="utf-8") as f:
+        f.write("Integridad y autenticacion para la version v1.0.8 sin emojis.")
+        
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    try:
+        # 1. Test de firma y verificacion de archivo via CLI
+        print("  Generando llaves RSA para firma de archivos...")
+        priv_rsa, pub_rsa = zch_e2ee.generar_llaves(2048)
+        zch_e2ee.guardar_llave_privada_en_archivo(priv_rsa, "v108_rsa_priv.pem", "rsapwd")
+        zch_e2ee.guardar_llave_publica_en_archivo(pub_rsa, "v108_rsa_pub.pem")
+        
+        print("  Firmando archivo via CLI...")
+        res_sign = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "sign-file",
+            "--file", ruta_temp, "--key-private", "v108_rsa_priv.pem", "--key-password", "rsapwd"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_sign = json.loads(res_sign.stdout)
+        assert out_sign["status"] == "success"
+        signature_b64 = out_sign["signature"]
+        print("    Firma generada exitosamente.")
+        
+        print("  Verificando firma del archivo via CLI...")
+        res_ver = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "verify-file",
+            "--file", ruta_temp, "--key-public", "v108_rsa_pub.pem", "--signature", signature_b64
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_ver = json.loads(res_ver.stdout)
+        assert out_ver["status"] == "success"
+        assert out_ver["valid"] is True
+        print("    [OK] Firma de archivo verificada correctamente.")
+        
+        # 2. Test de simulador Double Ratchet (ratchet-sim) via CLI
+        print("  Ejecutando simulacion automatica de Double Ratchet via CLI...")
+        res_ratchet = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-sim"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_ratchet = json.loads(res_ratchet.stdout)
+        assert out_ratchet["status"] == "success"
+        sim_log = out_ratchet["simulation"]
+        assert len(sim_log) == 3
+        assert sim_log[0]["from"] == "Alice"
+        assert sim_log[0]["decrypted"] == "Hola Bob, este es el inicio de nuestra sesion segura."
+        print("    [OK] Simulador Double Ratchet via CLI verificado correctamente.")
+        
+        # 3. Test de Keystore Backup y Restore via CLI
+        ruta_ks_orig = "v108_ks_orig.json"
+        ruta_ks_dest = "v108_ks_dest.json"
+        ruta_bak = "v108_ks_backup.bak"
+        pwd_ks = "ClaveMaestraKeystore1!"
+        pwd_bak = "ClaveRespaldoCifrado2!"
+        
+        print("  Creando Keystore original y agregando llave...")
+        ks_orig = zch_e2ee.KeystoreZCH.crear(ruta_ks_orig, pwd_ks)
+        ks_orig.guardar_clave_contacto("contacto_amigo", pub_rsa)
+        ks_orig.guardar(ruta_ks_orig, pwd_ks)
+        
+        print("  Ejecutando respaldo de Keystore via CLI...")
+        res_bak = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-backup",
+            "--keystore", ruta_ks_orig, "--password", pwd_ks,
+            "--out-backup", ruta_bak, "--backup-password", pwd_bak
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_bak = json.loads(res_bak.stdout)
+        assert out_bak["status"] == "success"
+        assert os.path.exists(ruta_bak)
+        
+        print("  Ejecutando restauracion de Keystore en nuevo llavero via CLI...")
+        res_res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-restore",
+            "--keystore", ruta_ks_dest, "--password", pwd_ks,
+            "--in-backup", ruta_bak, "--backup-password", pwd_bak
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_res = json.loads(res_res.stdout)
+        assert out_res["status"] == "success"
+        assert os.path.exists(ruta_ks_dest)
+        
+        # Cargar y verificar claves en el llavero destino
+        ks_dest = zch_e2ee.KeystoreZCH.cargar(ruta_ks_dest, pwd_ks)
+        assert "contacto_amigo" in ks_dest.listar_alias()["claves_publicas"]
+        print("    [OK] Respaldo y restauracion de Keystore via CLI verificado correctamente.")
+        
+    finally:
+        # Limpieza
+        for f in [ruta_temp, "v108_rsa_priv.pem", "v108_rsa_pub.pem", "v108_ks_orig.json", "v108_ks_dest.json", "v108_ks_backup.bak"]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.0.8 completadas con exito.")
+
 # =====================================================================
 # MAIN RUNNER
 # =====================================================================
 
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.7")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.0.8")
     print("=" * 75)
     
     try:
@@ -1204,7 +1298,10 @@ def main():
         # Tests v1.0.7
         test_nuevas_caracteristicas_v107()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.7 PASARON EXITOSAMENTE!")
+        # Tests v1.0.8
+        test_nuevas_caracteristicas_v108()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.0.8 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

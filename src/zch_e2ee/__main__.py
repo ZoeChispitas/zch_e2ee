@@ -24,7 +24,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.7)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.0.8)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -40,10 +40,11 @@ def menu_interactivo():
         print("  12. Cifrar o descifrar texto directo")
         print("  13. Calcular o verificar hash SHA-256 de archivo")
         print("  14. Calcular o verificar HMAC de archivo")
-        print("  15. Salir")
+        print("  15. Simular sesión interactiva de Double Ratchet")
+        print("  16. Salir")
         print("=" * 70)
         
-        opcion = input("Selecciona una opción (1-15): ").strip()
+        opcion = input("Selecciona una opción (1-16): ").strip()
         
         if opcion == "1":
             print("\n--- Generar Llaves ---")
@@ -291,7 +292,9 @@ def menu_interactivo():
             print("  b. Listar alias en un llavero")
             print("  c. Agregar una clave (.pem) al llavero")
             print("  d. Exportar una clave a un archivo (.pem)")
-            sub_opc = input("Selecciona una opción (a/b/c/d): ").strip().lower()
+            print("  e. Respaldar llavero completo (Backup)")
+            print("  f. Restaurar llavero desde respaldo (Restore)")
+            sub_opc = input("Selecciona una opción (a/b/c/d/e/f): ").strip().lower()
             
             if sub_opc == "a":
                 ruta_ks = input("Ruta del nuevo llavero (ej: llavero.json): ").strip()
@@ -376,6 +379,50 @@ def menu_interactivo():
                     imprimir_exito(f"Clave '{alias}' exportada con éxito en '{ruta_dest}'.")
                 except Exception as e:
                     imprimir_error(f"Error al exportar: {e}")
+            elif sub_opc == "e":
+                ruta_ks = input("Ruta del llavero: ").strip()
+                pwd = input("Contraseña maestra del llavero: ").strip()
+                ruta_bak = input("Ruta de destino del respaldo (.json / .bak): ").strip()
+                pwd_bak = input("Contraseña de cifrado para el respaldo: ").strip()
+                try:
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
+                    data = {
+                        "claves_privadas": ks.claves_privadas,
+                        "claves_publicas": ks.claves_publicas
+                    }
+                    datos_json = json.dumps(data)
+                    backup_b64 = zch_e2ee.encriptar_con_password(datos_json, pwd_bak)
+                    with open(ruta_bak, 'w', encoding='utf-8') as f:
+                        f.write(backup_b64)
+                    imprimir_exito(f"Respaldo cifrado creado con éxito en '{ruta_bak}'.")
+                except Exception as e:
+                    imprimir_error(f"Error al respaldar llavero: {e}")
+
+            elif sub_opc == "f":
+                ruta_ks = input("Ruta del llavero destino: ").strip()
+                pwd = input("Contraseña maestra del llavero destino: ").strip()
+                ruta_bak = input("Ruta del archivo de respaldo: ").strip()
+                pwd_bak = input("Contraseña de cifrado del respaldo: ").strip()
+                try:
+                    with open(ruta_bak, 'r', encoding='utf-8') as f:
+                        backup_b64 = f.read()
+                    datos_json = zch_e2ee.desencriptar_con_password(backup_b64, pwd_bak)
+                    data = json.loads(datos_json)
+                    
+                    if os.path.exists(ruta_ks):
+                        try:
+                            ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd)
+                        except Exception:
+                            ks = zch_e2ee.KeystoreZCH()
+                    else:
+                        ks = zch_e2ee.KeystoreZCH()
+                        
+                    ks.claves_privadas.update(data.get("claves_privadas", {}))
+                    ks.claves_publicas.update(data.get("claves_publicas", {}))
+                    ks.guardar(ruta_ks, pwd)
+                    imprimir_exito(f"Llavero restaurado y actualizado con éxito en '{ruta_ks}'.")
+                except Exception as e:
+                    imprimir_error(f"Error al restaurar llavero: {e}")
             else:
                 imprimir_error("Opción de submenú inválida.")
                 
@@ -520,13 +567,50 @@ def menu_interactivo():
                 imprimir_error(f"Fallo al procesar HMAC: {e}")
 
         elif opcion == "15":
+            print("\n--- Simulación Interactiva de Double Ratchet ---")
+            print("Generando llaves efímeras para Alice y Bob...")
+            try:
+                priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+                priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+                
+                sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
+                sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+                
+                print("Sesiones inicializadas correctamente.")
+                while True:
+                    print("\nAcciones disponibles:")
+                    print("  1. Alice envía mensaje a Bob")
+                    print("  2. Bob envía mensaje a Alice")
+                    print("  3. Volver al menú principal")
+                    sub_opt = input("Selecciona acción (1-3): ").strip()
+                    
+                    if sub_opt == "1":
+                        texto = input("Mensaje de Alice para Bob: ")
+                        cifrado = sesion_alice.enviar_mensaje(texto)
+                        print(f"Mensaje cifrado (Base64):\n{cifrado}")
+                        descifrado = sesion_bob.recibir_mensaje(cifrado)
+                        print(f"Bob descifró con éxito: {descifrado}")
+                    elif sub_opt == "2":
+                        texto = input("Mensaje de Bob para Alice: ")
+                        cifrado = sesion_bob.enviar_mensaje(texto)
+                        print(f"Mensaje cifrado (Base64):\n{cifrado}")
+                        descifrado = sesion_alice.recibir_mensaje(cifrado)
+                        print(f"Alice descifró con éxito: {descifrado}")
+                    elif sub_opt == "3":
+                        break
+                    else:
+                        imprimir_error("Acción inválida.")
+            except Exception as e:
+                imprimir_error(f"Error en la simulación: {e}")
+
+        elif opcion == "16":
             print("\n¡Hasta luego! Mantente seguro.")
             break
         else:
             imprimir_error("Opción inválida.")
  
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.7 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.0.8 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -632,6 +716,35 @@ def main():
     sub_hmac_ver.add_argument("--file", required=True, help="Ruta del archivo a procesar")
     sub_hmac_ver.add_argument("--key", required=True, help="Clave simétrica usada para calcular el HMAC")
     sub_hmac_ver.add_argument("--hmac", required=True, help="Valor de HMAC esperado en formato hex")
+
+    # sign-file
+    sub_sign = subparsers.add_parser("sign-file", help="Firmar un archivo digitalmente")
+    sub_sign.add_argument("--file", required=True, help="Ruta del archivo a firmar")
+    sub_sign.add_argument("--key-private", required=True, help="Ruta de la llave privada (.pem)")
+    sub_sign.add_argument("--key-password", help="Contraseña opcional de la llave privada PEM")
+
+    # verify-file
+    sub_verify = subparsers.add_parser("verify-file", help="Verificar la firma digital de un archivo")
+    sub_verify.add_argument("--file", required=True, help="Ruta del archivo original")
+    sub_verify.add_argument("--key-public", required=True, help="Ruta de la llave pública (.pem)")
+    sub_verify.add_argument("--signature", required=True, help="Firma digital en formato Base64")
+
+    # ratchet-sim
+    sub_ratchet = subparsers.add_parser("ratchet-sim", help="Simular una sesión Double Ratchet interactiva o por script")
+
+    # keystore-backup
+    sub_ks_bak = subparsers.add_parser("keystore-backup", help="Crear un respaldo cifrado de todo el Keystore")
+    sub_ks_bak.add_argument("--keystore", required=True, help="Ruta del llavero original")
+    sub_ks_bak.add_argument("--password", required=True, help="Contraseña maestra del llavero original")
+    sub_ks_bak.add_argument("--out-backup", required=True, help="Ruta del archivo de respaldo de salida")
+    sub_ks_bak.add_argument("--backup-password", required=True, help="Contraseña para cifrar el archivo de respaldo")
+
+    # keystore-restore
+    sub_ks_res = subparsers.add_parser("keystore-restore", help="Restaurar y fusionar un respaldo en un Keystore")
+    sub_ks_res.add_argument("--keystore", required=True, help="Ruta del llavero destino")
+    sub_ks_res.add_argument("--password", required=True, help="Contraseña maestra del llavero destino")
+    sub_ks_res.add_argument("--in-backup", required=True, help="Ruta del archivo de respaldo a importar")
+    sub_ks_res.add_argument("--backup-password", required=True, help="Contraseña de descifrado del archivo de respaldo")
 
     # interactive
     subparsers.add_parser("interactive", help="Lanza el menú interactivo con formato de consola")
@@ -975,6 +1088,159 @@ def main():
                 sys.exit(1)
         except Exception as e:
             imprimir_error(f"Fallo al verificar HMAC: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "sign-file":
+        try:
+            try:
+                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
+            except Exception:
+                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_private, args.key_password)
+
+            if "Ed25519" in type(priv).__name__:
+                with open(args.file, 'rb') as f:
+                    datos = f.read()
+                firma = zch_e2ee.firmar_mensaje_ed25519(datos.decode('utf-8', errors='ignore'), priv)
+            else:
+                firma = zch_e2ee.firmar_archivo(args.file, priv)
+
+            if args.json:
+                imprimir_exito("Firma generada correctamente.", args.json, {"signature": firma})
+            else:
+                if args.stdout:
+                    sys.stdout.write(firma)
+                else:
+                    print(firma)
+        except Exception as e:
+            imprimir_error(f"Fallo al firmar archivo: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "verify-file":
+        try:
+            try:
+                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_public)
+            except Exception:
+                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_public)
+
+            if "Ed25519" in type(pub).__name__:
+                with open(args.file, 'rb') as f:
+                    datos = f.read()
+                es_valido = zch_e2ee.verificar_firma_ed25519(datos.decode('utf-8', errors='ignore'), args.signature, pub)
+            else:
+                es_valido = zch_e2ee.verificar_firma_archivo(args.file, args.signature, pub)
+
+            if es_valido:
+                imprimir_exito("La firma es totalmente valida.", args.json, {"valid": True})
+            else:
+                imprimir_error("La firma es invalida o el archivo fue alterado.", args.json)
+                sys.exit(1)
+        except Exception as e:
+            imprimir_error(f"Fallo al verificar firma: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "ratchet-sim":
+        try:
+            if args.json:
+                priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+                priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+                sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
+                sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+                
+                sim_log = []
+                # 1. Alice -> Bob
+                txt1 = "Hola Bob, este es el inicio de nuestra sesion segura."
+                cifrado1 = sesion_alice.enviar_mensaje(txt1)
+                descifrado1 = sesion_bob.recibir_mensaje(cifrado1)
+                sim_log.append({"from": "Alice", "to": "Bob", "plain": txt1, "cipher": cifrado1, "decrypted": descifrado1})
+                
+                # 2. Bob -> Alice
+                txt2 = "Entendido Alice, te escucho fuerte y claro."
+                cifrado2 = sesion_bob.enviar_mensaje(txt2)
+                descifrado2 = sesion_alice.recibir_mensaje(cifrado2)
+                sim_log.append({"from": "Bob", "to": "Alice", "plain": txt2, "cipher": cifrado2, "decrypted": descifrado2})
+                
+                # 3. Alice -> Bob
+                txt3 = "Excelente. El trinquete esta rotando las llaves perfectamente."
+                cifrado3 = sesion_alice.enviar_mensaje(txt3)
+                descifrado3 = sesion_bob.recibir_mensaje(cifrado3)
+                sim_log.append({"from": "Alice", "to": "Bob", "plain": txt3, "cipher": cifrado3, "decrypted": descifrado3})
+                
+                imprimir_exito("Simulacion automatica completada.", args.json, {"simulation": sim_log})
+            else:
+                print("\n--- Simulación Interactiva de Double Ratchet (CLI) ---")
+                print("Generando llaves efímeras para Alice y Bob...")
+                priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+                priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+                
+                sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
+                sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+                print("Sesiones inicializadas correctamente.")
+                
+                while True:
+                    print("\nAcciones disponibles:")
+                    print("  1. Alice envía mensaje a Bob")
+                    print("  2. Bob envía mensaje a Alice")
+                    print("  3. Terminar simulación")
+                    sub_opt = input("Selecciona acción (1-3): ").strip()
+                    
+                    if sub_opt == "1":
+                        texto = input("Mensaje de Alice para Bob: ")
+                        cifrado = sesion_alice.enviar_mensaje(texto)
+                        print(f"Mensaje cifrado (Base64):\n{cifrado}")
+                        descifrado = sesion_bob.recibir_mensaje(cifrado)
+                        print(f"Bob descifró con éxito: {descifrado}")
+                    elif sub_opt == "2":
+                        texto = input("Mensaje de Bob para Alice: ")
+                        cifrado = sesion_bob.enviar_mensaje(texto)
+                        print(f"Mensaje cifrado (Base64):\n{cifrado}")
+                        descifrado = sesion_alice.recibir_mensaje(cifrado)
+                        print(f"Alice descifró con éxito: {descifrado}")
+                    elif sub_opt == "3":
+                        break
+                    else:
+                        print("Acción inválida.")
+        except Exception as e:
+            imprimir_error(f"Fallo en simulador de Double Ratchet: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-backup":
+        try:
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            data = {
+                "claves_privadas": ks.claves_privadas,
+                "claves_publicas": ks.claves_publicas
+            }
+            datos_json = json.dumps(data)
+            backup_b64 = zch_e2ee.encriptar_con_password(datos_json, args.backup_password)
+            with open(args.out_backup, 'w', encoding='utf-8') as f:
+                f.write(backup_b64)
+            imprimir_exito(f"Respaldo cifrado de Keystore creado correctamente en '{args.out_backup}'.", args.json, {"out_backup": args.out_backup})
+        except Exception as e:
+            imprimir_error(f"Fallo al realizar respaldo de Keystore: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-restore":
+        try:
+            with open(args.in_backup, 'r', encoding='utf-8') as f:
+                backup_b64 = f.read()
+            datos_json = zch_e2ee.desencriptar_con_password(backup_b64, args.backup_password)
+            data = json.loads(datos_json)
+            
+            if os.path.exists(args.keystore):
+                try:
+                    ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                except Exception:
+                    ks = zch_e2ee.KeystoreZCH()
+            else:
+                ks = zch_e2ee.KeystoreZCH()
+                
+            ks.claves_privadas.update(data.get("claves_privadas", {}))
+            ks.claves_publicas.update(data.get("claves_publicas", {}))
+            ks.guardar(args.keystore, args.password)
+            
+            imprimir_exito(f"Respaldo de Keystore restaurado correctamente en '{args.keystore}'.", args.json, {"keystore": args.keystore})
+        except Exception as e:
+            imprimir_error(f"Fallo al restaurar respaldo de Keystore: {e}", args.json)
             sys.exit(1)
 
 if __name__ == "__main__":
