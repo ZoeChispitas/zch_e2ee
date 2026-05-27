@@ -1519,9 +1519,209 @@ def test_nuevas_caracteristicas_v110():
 # MAIN RUNNER
 # =====================================================================
 
+def test_nuevas_caracteristicas_v111():
+    print("\n--- TEST: Nuevas caracteristicas v1.1.1 (Keystore CLI Key Aliases) ---")
+    
+    env_dict = {**os.environ, "PYTHONPATH": "src"}
+    
+    ruta_ks = "v111_ks.json"
+    pwd_ks = "ClaveKS111!"
+    
+    temp_file = "v111_file.txt"
+    temp_enc = "v111_file.enc"
+    temp_dec = "v111_file_dec.txt"
+    
+    dir_orig = "v111_dir_orig"
+    dir_dest = "v111_dir_dest"
+    dir_enc = "v111_dir.enc"
+    
+    file_session = "v111_session.json"
+    
+    # Limpiar previos
+    for f in [ruta_ks, temp_file, temp_enc, temp_dec, dir_enc, file_session]:
+        if os.path.exists(f):
+            os.remove(f)
+    for d in [dir_orig, dir_dest]:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+            
+    try:
+        # 1. Crear Keystore y registrar llaves
+        ks = zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd_ks)
+        
+        priv_rsa, pub_rsa = zch_e2ee.generar_llaves()
+        priv_ec, pub_ec = zch_e2ee.generar_llaves_ec()
+        priv_ed, pub_ed = zch_e2ee.generar_llaves_ed25519()
+        
+        ks.guardar_clave_propia("alice_priv_rsa", priv_rsa)
+        ks.guardar_clave_contacto("alice_pub_rsa", pub_rsa)
+        
+        ks.guardar_clave_propia("alice_priv_ec", priv_ec)
+        ks.guardar_clave_contacto("alice_pub_ec", pub_ec)
+        
+        ks.guardar_clave_propia("alice_priv_ed", priv_ed)
+        ks.guardar_clave_contacto("alice_pub_ed", pub_ed)
+        
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        # Escribir archivo de prueba
+        original_content = "Contenido ultra secreto de Zoe para la v1.1.1."
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(original_content)
+            
+        # 2. Test: encrypt y decrypt usando alias
+        print("  Probando encrypt usando alias de clave publica...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt",
+            "--in-file", temp_file, "--out-file", temp_enc,
+            "--key-alias", "alice_pub_rsa",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        print("  Probando decrypt usando alias de clave privada...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt",
+            "--in-file", temp_enc, "--out-file", temp_dec,
+            "--key-alias", "alice_priv_rsa",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        with open(temp_dec, "r", encoding="utf-8") as f:
+            assert f.read() == original_content
+        print("    [OK] encrypt y decrypt con alias RSA exitoso.")
+        
+        # Limpiar intermedios
+        os.remove(temp_enc)
+        os.remove(temp_dec)
+        
+        # EC
+        print("  Probando encrypt usando alias de clave publica EC...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt",
+            "--in-file", temp_file, "--out-file", temp_enc,
+            "--key-alias", "alice_pub_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        print("  Probando decrypt usando alias de clave privada EC...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt",
+            "--in-file", temp_enc, "--out-file", temp_dec,
+            "--key-alias", "alice_priv_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        with open(temp_dec, "r", encoding="utf-8") as f:
+            assert f.read() == original_content
+        print("    [OK] encrypt y decrypt con alias EC exitoso.")
+        
+        # Limpiar intermedios
+        os.remove(temp_enc)
+        os.remove(temp_dec)
+
+        # 3. Test: encrypt-text y decrypt-text usando alias
+        print("  Probando encrypt-text usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text",
+            "--text", original_content,
+            "--key-alias", "alice_pub_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_enc = json.loads(res.stdout)
+        assert out_enc["status"] == "success"
+        cipher_text = out_enc["cipher"]
+        
+        print("  Probando decrypt-text usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text",
+            "--text", cipher_text,
+            "--key-alias", "alice_priv_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_dec = json.loads(res.stdout)
+        assert out_dec["status"] == "success"
+        assert out_dec["plain"] == original_content
+        print("    [OK] encrypt-text y decrypt-text exitoso.")
+        
+        # 4. Test: sign-file y verify-file usando alias (Ed25519)
+        print("  Probando sign-file usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "sign-file",
+            "--file", temp_file,
+            "--key-alias", "alice_priv_ed",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_sign = json.loads(res.stdout)
+        assert out_sign["status"] == "success"
+        signature = out_sign["signature"]
+        
+        print("  Probando verify-file usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "verify-file",
+            "--file", temp_file, "--signature", signature,
+            "--key-alias", "alice_pub_ed",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_ver = json.loads(res.stdout)
+        assert out_ver["status"] == "success"
+        assert out_ver["valid"] is True
+        print("    [OK] sign-file y verify-file exitoso.")
+        
+        # 5. Test: encrypt-dir y decrypt-dir usando alias
+        os.makedirs(dir_orig, exist_ok=True)
+        with open(os.path.join(dir_orig, "f1.txt"), "w", encoding="utf-8") as f:
+            f.write("directorio_secreto_v111")
+            
+        print("  Probando encrypt-dir usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-dir",
+            "--in-dir", dir_orig, "--out-file", dir_enc,
+            "--key-alias", "alice_pub_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        print("  Probando decrypt-dir usando alias...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir",
+            "--in-file", dir_enc, "--out-dir", dir_dest,
+            "--key-alias", "alice_priv_ec",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        with open(os.path.join(dir_dest, "f1.txt"), "r", encoding="utf-8") as f:
+            assert f.read() == "directorio_secreto_v111"
+        print("    [OK] encrypt-dir y decrypt-dir exitoso.")
+        
+        # 6. Test: ratchet-init usando alias
+        print("  Probando ratchet-init usando aliases...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private-alias", "alice_priv_ec",
+            "--key-public-alias", "alice_pub_ec",
+            "--initiator", "--out-session", file_session,
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        assert os.path.exists(file_session)
+        print("    [OK] ratchet-init con aliases exitoso.")
+        
+    finally:
+        # Limpiar
+        for f in [ruta_ks, temp_file, temp_enc, temp_dec, dir_enc, file_session]:
+            if os.path.exists(f):
+                os.remove(f)
+        for d in [dir_orig, dir_dest]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.1 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.0")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.1")
     print("=" * 75)
     
     try:
@@ -1577,7 +1777,10 @@ def main():
         # Tests v1.1.0
         test_nuevas_caracteristicas_v110()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.0 PASARON EXITOSAMENTE!")
+        # Tests v1.1.1
+        test_nuevas_caracteristicas_v111()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.1 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

@@ -6,7 +6,7 @@ import base64
 import tempfile
 import zch_e2ee
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.asymmetric import x25519, rsa
 
 def serializar_sesion_ratchet(sesion):
     dhp_pem = sesion.dhp.private_bytes(
@@ -80,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.0)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.1)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -754,8 +754,42 @@ def menu_interactivo():
         else:
             imprimir_error("Opción inválida.")
  
+def obtener_publica_desde_args(args, key_rsa_path=None, key_ec_path=None, key_alias=None, key_public_path=None):
+    if key_alias:
+        if not args.keystore or not args.keystore_password:
+            raise ValueError("Se requiere --keystore y --keystore-password para cargar la llave publica usando alias.")
+        ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+        return ks.obtener_clave_contacto(key_alias)
+    elif key_public_path:
+        try:
+            return zch_e2ee.cargar_llave_publica_ec_desde_archivo(key_public_path)
+        except Exception:
+            return zch_e2ee.cargar_llave_publica_desde_archivo(key_public_path)
+    elif key_rsa_path:
+        return zch_e2ee.cargar_llave_publica_desde_archivo(key_rsa_path)
+    elif key_ec_path:
+        return zch_e2ee.cargar_llave_publica_ec_desde_archivo(key_ec_path)
+    return None
+
+def obtener_privada_desde_args(args, key_rsa_path=None, key_ec_path=None, key_alias=None, key_password=None, key_private_path=None):
+    if key_alias:
+        if not args.keystore or not args.keystore_password:
+            raise ValueError("Se requiere --keystore y --keystore-password para cargar la llave privada usando alias.")
+        ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+        return ks.obtener_clave_privada(key_alias)
+    elif key_private_path:
+        try:
+            return zch_e2ee.cargar_llave_privada_ec_desde_archivo(key_private_path, key_password)
+        except Exception:
+            return zch_e2ee.cargar_llave_privada_desde_archivo(key_private_path, key_password)
+    elif key_rsa_path:
+        return zch_e2ee.cargar_llave_privada_desde_archivo(key_rsa_path, key_password)
+    elif key_ec_path:
+        return zch_e2ee.cargar_llave_privada_ec_desde_archivo(key_ec_path, key_password)
+    return None
+
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.0 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.1 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -777,6 +811,9 @@ def main():
     sub_enc.add_argument("--password", help="Cifrar con contraseña simétrica")
     sub_enc.add_argument("--key-rsa", help="Llave pública RSA para cifrar")
     sub_enc.add_argument("--key-ec", help="Llave pública X25519 para cifrar")
+    sub_enc.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
+    sub_enc.add_argument("--keystore", help="Ruta al Keystore")
+    sub_enc.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # decrypt
     sub_dec = subparsers.add_parser("decrypt", help="Descifrar un archivo")
@@ -786,6 +823,9 @@ def main():
     sub_dec.add_argument("--key-rsa", help="Llave privada RSA para descifrar")
     sub_dec.add_argument("--key-ec", help="Llave privada X25519 para descifrar")
     sub_dec.add_argument("--key-password", help="Contraseña de la llave pem si corresponde")
+    sub_dec.add_argument("--key-alias", help="Alias de tu llave privada propia a recuperar del Keystore")
+    sub_dec.add_argument("--keystore", help="Ruta al Keystore")
+    sub_dec.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # shamir-split
     sub_split = subparsers.add_parser("shamir-split", help="Dividir un secreto usando el esquema de Shamir")
@@ -842,6 +882,9 @@ def main():
     sub_enc_txt.add_argument("--password", help="Cifrar con contraseña simétrica")
     sub_enc_txt.add_argument("--key-rsa", help="Llave pública RSA para cifrar")
     sub_enc_txt.add_argument("--key-ec", help="Llave pública X25519 para cifrar")
+    sub_enc_txt.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
+    sub_enc_txt.add_argument("--keystore", help="Ruta al Keystore")
+    sub_enc_txt.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # decrypt-text
     sub_dec_txt = subparsers.add_parser("decrypt-text", help="Descifrar un texto cifrado directo")
@@ -850,6 +893,9 @@ def main():
     sub_dec_txt.add_argument("--key-rsa", help="Llave privada RSA para descifrar")
     sub_dec_txt.add_argument("--key-ec", help="Llave privada X25519 para descifrar")
     sub_dec_txt.add_argument("--key-password", help="Contraseña de la llave privada PEM si está cifrada")
+    sub_dec_txt.add_argument("--key-alias", help="Alias de tu llave privada propia a recuperar del Keystore")
+    sub_dec_txt.add_argument("--keystore", help="Ruta al Keystore")
+    sub_dec_txt.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # hmac-calc
     sub_hmac_calc = subparsers.add_parser("hmac-calc", help="Calcular el HMAC-SHA256 de un archivo")
@@ -865,14 +911,20 @@ def main():
     # sign-file
     sub_sign = subparsers.add_parser("sign-file", help="Firmar un archivo digitalmente")
     sub_sign.add_argument("--file", required=True, help="Ruta del archivo a firmar")
-    sub_sign.add_argument("--key-private", required=True, help="Ruta de la llave privada (.pem)")
+    sub_sign.add_argument("--key-private", help="Ruta de la llave privada (.pem)")
     sub_sign.add_argument("--key-password", help="Contraseña opcional de la llave privada PEM")
+    sub_sign.add_argument("--key-alias", help="Alias de tu llave privada propia a recuperar del Keystore")
+    sub_sign.add_argument("--keystore", help="Ruta al Keystore")
+    sub_sign.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # verify-file
     sub_verify = subparsers.add_parser("verify-file", help="Verificar la firma digital de un archivo")
     sub_verify.add_argument("--file", required=True, help="Ruta del archivo original")
-    sub_verify.add_argument("--key-public", required=True, help="Ruta de la llave pública (.pem)")
+    sub_verify.add_argument("--key-public", help="Ruta de la llave pública (.pem)")
     sub_verify.add_argument("--signature", required=True, help="Firma digital en formato Base64")
+    sub_verify.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
+    sub_verify.add_argument("--keystore", help="Ruta al Keystore")
+    sub_verify.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # ratchet-sim
     sub_ratchet = subparsers.add_parser("ratchet-sim", help="Simular una sesión Double Ratchet interactiva o por script")
@@ -898,6 +950,9 @@ def main():
     sub_enc_dir.add_argument("--password", help="Cifrar con contraseña simétrica")
     sub_enc_dir.add_argument("--key-rsa", help="Llave pública RSA para cifrar")
     sub_enc_dir.add_argument("--key-ec", help="Llave pública X25519 para cifrar")
+    sub_enc_dir.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
+    sub_enc_dir.add_argument("--keystore", help="Ruta al Keystore")
+    sub_enc_dir.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # decrypt-dir
     sub_dec_dir = subparsers.add_parser("decrypt-dir", help="Descifrar un directorio completo")
@@ -907,6 +962,9 @@ def main():
     sub_dec_dir.add_argument("--key-rsa", help="Llave privada RSA para descifrar")
     sub_dec_dir.add_argument("--key-ec", help="Llave privada X25519 para descifrar")
     sub_dec_dir.add_argument("--key-password", help="Contraseña de la llave privada PEM si está cifrada")
+    sub_dec_dir.add_argument("--key-alias", help="Alias de tu llave privada propia a recuperar del Keystore")
+    sub_dec_dir.add_argument("--keystore", help="Ruta al Keystore")
+    sub_dec_dir.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # encrypt-dir-multi
     sub_enc_dir_multi = subparsers.add_parser("encrypt-dir-multi", help="Cifrar un directorio completo para múltiples destinatarios")
@@ -929,11 +987,15 @@ def main():
 
     # ratchet-init
     sub_rat_init = subparsers.add_parser("ratchet-init", help="Inicializar un archivo de sesión Double Ratchet")
-    sub_rat_init.add_argument("--key-private", required=True, help="Ruta de tu llave privada (.pem)")
-    sub_rat_init.add_argument("--key-public", required=True, help="Ruta de la llave pública (.pem) del destinatario")
+    sub_rat_init.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
+    sub_rat_init.add_argument("--key-public", help="Ruta de la llave pública (.pem) del destinatario")
     sub_rat_init.add_argument("--initiator", action="store_true", help="Especificar si inicias la conversación")
     sub_rat_init.add_argument("--out-session", required=True, help="Ruta del archivo de sesión JSON de salida")
     sub_rat_init.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
+    sub_rat_init.add_argument("--key-private-alias", help="Alias de tu llave privada propia a recuperar del Keystore")
+    sub_rat_init.add_argument("--key-public-alias", help="Alias de la llave pública del contacto a recuperar del Keystore")
+    sub_rat_init.add_argument("--keystore", help="Ruta al Keystore")
+    sub_rat_init.add_argument("--keystore-password", help="Contraseña del Keystore")
 
     # ratchet-encrypt
     sub_rat_enc = subparsers.add_parser("ratchet-encrypt", help="Cifrar mensaje usando una sesión Double Ratchet activa")
@@ -998,15 +1060,18 @@ def main():
                 
                 if args.password:
                     zch_e2ee.encriptar_archivo_con_password(temp_in.name, temp_out.name, args.password)
-                elif args.key_rsa:
-                    pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_rsa)
-                    zch_e2ee.encriptar_archivo_e2ee(temp_in.name, temp_out.name, pub)
-                elif args.key_ec:
-                    pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_ec)
-                    zch_e2ee.encriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, pub)
                 else:
-                    imprimir_error("Debe especificar --password, --key-rsa o --key-ec para cifrar.", args.json)
-                    sys.exit(1)
+                    pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
+                    if not pub:
+                        imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para cifrar.", args.json)
+                        sys.exit(1)
+                    if isinstance(pub, rsa.RSAPublicKey):
+                        zch_e2ee.encriptar_archivo_e2ee(temp_in.name, temp_out.name, pub)
+                    elif isinstance(pub, x25519.X25519PublicKey):
+                        zch_e2ee.encriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, pub)
+                    else:
+                        imprimir_error("Tipo de llave pública no soportado para cifrar (debe ser RSA o X25519).", args.json)
+                        sys.exit(1)
                     
                 with open(temp_out.name, 'rb') as f:
                     datos_cifrados = f.read()
@@ -1042,15 +1107,18 @@ def main():
                 
                 if args.password:
                     zch_e2ee.desencriptar_archivo_con_password(temp_in.name, temp_out.name, args.password)
-                elif args.key_rsa:
-                    priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_rsa, args.key_password)
-                    zch_e2ee.desencriptar_archivo_e2ee(temp_in.name, temp_out.name, priv)
-                elif args.key_ec:
-                    priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_ec, args.key_password)
-                    zch_e2ee.desencriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, priv)
                 else:
-                    imprimir_error("Debe especificar --password, --key-rsa o --key-ec.", args.json)
-                    sys.exit(1)
+                    priv = obtener_privada_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias, key_password=args.key_password)
+                    if not priv:
+                        imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
+                        sys.exit(1)
+                    if isinstance(priv, rsa.RSAPrivateKey):
+                        zch_e2ee.desencriptar_archivo_e2ee(temp_in.name, temp_out.name, priv)
+                    elif isinstance(priv, x25519.X25519PrivateKey):
+                        zch_e2ee.desencriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, priv)
+                    else:
+                        imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                        sys.exit(1)
                     
                 with open(temp_out.name, 'rb') as f:
                     datos_descifrados = f.read()
@@ -1200,15 +1268,18 @@ def main():
             cifrado = None
             if args.password:
                 cifrado = zch_e2ee.encriptar_con_password(mensaje, args.password)
-            elif args.key_rsa:
-                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_rsa)
-                cifrado = zch_e2ee.encriptar_e2ee(mensaje, pub)
-            elif args.key_ec:
-                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_ec)
-                cifrado = zch_e2ee.encriptar_e2ee_ec(mensaje, pub)
             else:
-                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para cifrar.", args.json)
-                sys.exit(1)
+                pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
+                if not pub:
+                    imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para cifrar.", args.json)
+                    sys.exit(1)
+                if isinstance(pub, rsa.RSAPublicKey):
+                    cifrado = zch_e2ee.encriptar_e2ee(mensaje, pub)
+                elif isinstance(pub, x25519.X25519PublicKey):
+                    cifrado = zch_e2ee.encriptar_e2ee_ec(mensaje, pub)
+                else:
+                    imprimir_error("Tipo de llave pública no soportado para cifrar (debe ser RSA o X25519).", args.json)
+                    sys.exit(1)
 
             if args.json:
                 imprimir_exito("Texto cifrado.", args.json, {"cipher": cifrado})
@@ -1234,15 +1305,18 @@ def main():
             descifrado = None
             if args.password:
                 descifrado = zch_e2ee.desencriptar_con_password(texto_cifrado, args.password)
-            elif args.key_rsa:
-                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_rsa, args.key_password)
-                descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
-            elif args.key_ec:
-                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_ec, args.key_password)
-                descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
             else:
-                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para descifrar.", args.json)
-                sys.exit(1)
+                priv = obtener_privada_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias, key_password=args.key_password)
+                if not priv:
+                    imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
+                    sys.exit(1)
+                if isinstance(priv, rsa.RSAPrivateKey):
+                    descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
+                elif isinstance(priv, x25519.X25519PrivateKey):
+                    descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
+                else:
+                    imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                    sys.exit(1)
 
             if args.json:
                 imprimir_exito("Texto descifrado.", args.json, {"plain": descifrado})
@@ -1297,10 +1371,10 @@ def main():
 
     elif args.command == "sign-file":
         try:
-            try:
-                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
-            except Exception:
-                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_private, args.key_password)
+            priv = obtener_privada_desde_args(args, key_private_path=args.key_private, key_alias=args.key_alias, key_password=args.key_password)
+            if not priv:
+                imprimir_error("Debe especificar --key-private o --key-alias para firmar.", args.json)
+                sys.exit(1)
 
             if "Ed25519" in type(priv).__name__:
                 with open(args.file, 'rb') as f:
@@ -1322,10 +1396,10 @@ def main():
 
     elif args.command == "verify-file":
         try:
-            try:
-                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_public)
-            except Exception:
-                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_public)
+            pub = obtener_publica_desde_args(args, key_public_path=args.key_public, key_alias=args.key_alias)
+            if not pub:
+                imprimir_error("Debe especificar --key-public o --key-alias para verificar.", args.json)
+                sys.exit(1)
 
             if "Ed25519" in type(pub).__name__:
                 with open(args.file, 'rb') as f:
@@ -1452,15 +1526,18 @@ def main():
         try:
             if args.password:
                 zch_e2ee.encriptar_directorio_con_password(args.in_dir, args.out_file, args.password)
-            elif args.key_rsa:
-                pub = zch_e2ee.cargar_llave_publica_desde_archivo(args.key_rsa)
-                zch_e2ee.encriptar_directorio_e2ee(args.in_dir, args.out_file, pub)
-            elif args.key_ec:
-                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_ec)
-                zch_e2ee.encriptar_directorio_e2ee_ec(args.in_dir, args.out_file, pub)
             else:
-                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para cifrar.", args.json)
-                sys.exit(1)
+                pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
+                if not pub:
+                    imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para cifrar.", args.json)
+                    sys.exit(1)
+                if isinstance(pub, rsa.RSAPublicKey):
+                    zch_e2ee.encriptar_directorio_e2ee(args.in_dir, args.out_file, pub)
+                elif isinstance(pub, x25519.X25519PublicKey):
+                    zch_e2ee.encriptar_directorio_e2ee_ec(args.in_dir, args.out_file, pub)
+                else:
+                    imprimir_error("Tipo de llave pública no soportado para cifrar (debe ser RSA o X25519).", args.json)
+                    sys.exit(1)
             imprimir_exito(f"Directorio cifrado guardado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
         except Exception as e:
             imprimir_error(f"Fallo al cifrar directorio: {e}", args.json)
@@ -1470,15 +1547,18 @@ def main():
         try:
             if args.password:
                 zch_e2ee.desencriptar_directorio_con_password(args.in_file, args.out_dir, args.password)
-            elif args.key_rsa:
-                priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_rsa, args.key_password)
-                zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv)
-            elif args.key_ec:
-                priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_ec, args.key_password)
-                zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv)
             else:
-                imprimir_error("Debe especificar --password, --key-rsa o --key-ec para descifrar.", args.json)
-                sys.exit(1)
+                priv = obtener_privada_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias, key_password=args.key_password)
+                if not priv:
+                    imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
+                    sys.exit(1)
+                if isinstance(priv, rsa.RSAPrivateKey):
+                    zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv)
+                elif isinstance(priv, x25519.X25519PrivateKey):
+                    zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv)
+                else:
+                    imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                    sys.exit(1)
             imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar directorio: {e}", args.json)
@@ -1546,8 +1626,21 @@ def main():
 
     elif args.command == "ratchet-init":
         try:
-            priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
-            pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.key_public)
+            priv = obtener_privada_desde_args(
+                args,
+                key_ec_path=args.key_private,
+                key_alias=args.key_private_alias,
+                key_password=args.key_password
+            )
+            pub = obtener_publica_desde_args(
+                args,
+                key_ec_path=args.key_public,
+                key_alias=args.key_public_alias
+            )
+            
+            if not priv or not pub:
+                imprimir_error("Debe especificar las llaves privada y pública correspondientes (usando archivos o alias del Keystore).", args.json)
+                sys.exit(1)
             
             sesion = zch_e2ee.SesionDoubleRatchet(priv, pub, args.initiator)
             state = serializar_sesion_ratchet(sesion)
