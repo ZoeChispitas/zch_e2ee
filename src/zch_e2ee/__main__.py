@@ -80,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.2)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.3)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -788,8 +788,36 @@ def obtener_privada_desde_args(args, key_rsa_path=None, key_ec_path=None, key_al
         return zch_e2ee.cargar_llave_privada_ec_desde_archivo(key_ec_path, key_password)
     return None
 
+def obtener_kdf_params(args):
+    params = {}
+    kdf_alg = getattr(args, "kdf", "scrypt")
+    if kdf_alg == "scrypt":
+        if getattr(args, "kdf_n", None) is not None:
+            params["n"] = args.kdf_n
+        if getattr(args, "kdf_r", None) is not None:
+            params["r"] = args.kdf_r
+        if getattr(args, "kdf_p", None) is not None:
+            params["p"] = args.kdf_p
+    elif kdf_alg == "argon2id":
+        if getattr(args, "kdf_memory", None) is not None:
+            params["memory_cost"] = args.kdf_memory
+        if getattr(args, "kdf_time", None) is not None:
+            params["time_cost"] = args.kdf_time
+        if getattr(args, "kdf_parallel", None) is not None:
+            params["parallelism"] = args.kdf_parallel
+    return params
+
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.2 — Herramienta de criptografía de nivel industrial.")
+    def agregar_argumentos_kdf(subparser):
+        subparser.add_argument("--kdf", choices=["scrypt", "argon2id"], default="scrypt", help="Algoritmo de derivacion de clave (scrypt o argon2id)")
+        subparser.add_argument("--kdf-n", type=int, help="Parametro n para Scrypt")
+        subparser.add_argument("--kdf-r", type=int, help="Parametro r para Scrypt")
+        subparser.add_argument("--kdf-p", type=int, help="Parametro p para Scrypt")
+        subparser.add_argument("--kdf-memory", type=int, help="Costo de memoria para Argon2id (KB)")
+        subparser.add_argument("--kdf-time", type=int, help="Costo de tiempo para Argon2id")
+        subparser.add_argument("--kdf-parallel", type=int, help="Paralelismo para Argon2id")
+
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.3 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -814,6 +842,7 @@ def main():
     sub_enc.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
     sub_enc.add_argument("--keystore", help="Ruta al Keystore")
     sub_enc.add_argument("--keystore-password", help="Contraseña del Keystore")
+    agregar_argumentos_kdf(sub_enc)
 
     # decrypt
     sub_dec = subparsers.add_parser("decrypt", help="Descifrar un archivo")
@@ -901,6 +930,7 @@ def main():
     sub_enc_txt.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
     sub_enc_txt.add_argument("--keystore", help="Ruta al Keystore")
     sub_enc_txt.add_argument("--keystore-password", help="Contraseña del Keystore")
+    agregar_argumentos_kdf(sub_enc_txt)
 
     # decrypt-text
     sub_dec_txt = subparsers.add_parser("decrypt-text", help="Descifrar un texto cifrado directo")
@@ -969,6 +999,7 @@ def main():
     sub_enc_dir.add_argument("--key-alias", help="Alias de la llave pública/contacto a recuperar del Keystore")
     sub_enc_dir.add_argument("--keystore", help="Ruta al Keystore")
     sub_enc_dir.add_argument("--keystore-password", help="Contraseña del Keystore")
+    agregar_argumentos_kdf(sub_enc_dir)
 
     # decrypt-dir
     sub_dec_dir = subparsers.add_parser("decrypt-dir", help="Descifrar un directorio completo")
@@ -1075,7 +1106,8 @@ def main():
                 temp_out.close()
                 
                 if args.password:
-                    zch_e2ee.encriptar_archivo_con_password(temp_in.name, temp_out.name, args.password)
+                    kdf_params = obtener_kdf_params(args)
+                    zch_e2ee.encriptar_archivo_con_password(temp_in.name, temp_out.name, args.password, kdf_name=args.kdf, **kdf_params)
                 else:
                     pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
                     if not pub:
@@ -1339,7 +1371,8 @@ def main():
 
             cifrado = None
             if args.password:
-                cifrado = zch_e2ee.encriptar_con_password(mensaje, args.password)
+                kdf_params = obtener_kdf_params(args)
+                cifrado = zch_e2ee.encriptar_con_password(mensaje, args.password, kdf_name=args.kdf, **kdf_params)
             else:
                 pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
                 if not pub:
@@ -1698,7 +1731,8 @@ def main():
     elif args.command == "encrypt-dir":
         try:
             if args.password:
-                zch_e2ee.encriptar_directorio_con_password(args.in_dir, args.out_file, args.password)
+                kdf_params = obtener_kdf_params(args)
+                zch_e2ee.encriptar_directorio_con_password(args.in_dir, args.out_file, args.password, kdf_name=args.kdf, **kdf_params)
             else:
                 pub = obtener_publica_desde_args(args, key_rsa_path=args.key_rsa, key_ec_path=args.key_ec, key_alias=args.key_alias)
                 if not pub:

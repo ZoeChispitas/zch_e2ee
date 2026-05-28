@@ -1878,9 +1878,105 @@ def test_nuevas_caracteristicas_v112():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.1.2 completadas con exito.")
 
+
+def test_nuevas_caracteristicas_v113():
+    print("\n--- TEST: Nuevas Caracteristicas v1.1.3 (Configuracion Scrypt y Argon2id) ---")
+    
+    mensaje = "Datos cifrados con un KDF altamente configurable para Zoe."
+    password = "KdfMasterPassword99!"
+    
+    # 1. Probar Scrypt con parametros custom
+    print("  Probando Scrypt con parametros personalizados...")
+    cifrado_scrypt = zch_e2ee.encriptar_con_password(mensaje, password, kdf_name="scrypt", n=2048, r=8, p=1)
+    descifrado_scrypt = zch_e2ee.desencriptar_con_password(cifrado_scrypt, password)
+    assert descifrado_scrypt == mensaje, "El descifrado de Scrypt custom fallo."
+    print("    [OK] Scrypt custom exitoso.")
+    
+    # 2. Probar Argon2id con parametros custom
+    print("  Probando Argon2id con parametros personalizados...")
+    cifrado_argon = zch_e2ee.encriptar_con_password(mensaje, password, kdf_name="argon2id", memory_cost=16384, time_cost=2, parallelism=2)
+    descifrado_argon = zch_e2ee.desencriptar_con_password(cifrado_argon, password)
+    assert descifrado_argon == mensaje, "El descifrado de Argon2id custom fallo."
+    print("    [OK] Argon2id custom exitoso.")
+    
+    # 3. Probar CLI
+    print("  Probando CLI: encrypt/decrypt usando Argon2id...")
+    temp_file = "temp_v113.txt"
+    temp_enc = "temp_v113.enc"
+    temp_dec = "temp_v113_dec.txt"
+    dir_orig = "temp_dir_v113"
+    dir_enc = "temp_dir_v113.enc"
+    dir_dest = "temp_dir_v113_dest"
+    
+    env_dict = os.environ.copy()
+    env_dict["PYTHONPATH"] = os.path.abspath("src")
+    
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(mensaje)
+            
+        # Cifrar con Argon2id via CLI
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt",
+            "--in-file", temp_file, "--out-file", temp_enc,
+            "--password", password,
+            "--kdf", "argon2id", "--kdf-memory", "8192", "--kdf-time", "1", "--kdf-parallel", "1"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # Descifrar (KDF autodescriptivo) via CLI
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt",
+            "--in-file", temp_enc, "--out-file", temp_dec,
+            "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        with open(temp_dec, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        print("    [OK] Cifrado y descifrado de archivos con KDF via CLI exitoso.")
+        
+        # Cifrar directorio con Scrypt custom via CLI
+        print("  Probando CLI: encrypt-dir/decrypt-dir usando Scrypt custom...")
+        
+        os.makedirs(dir_orig, exist_ok=True)
+        with open(os.path.join(dir_orig, "info.txt"), "w", encoding="utf-8") as f:
+            f.write("directorio_kdf_v113")
+            
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-dir",
+            "--in-dir", dir_orig, "--out-file", dir_enc,
+            "--password", password,
+            "--kdf", "scrypt", "--kdf-n", "1024", "--kdf-r", "8", "--kdf-p", "1"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-dir",
+            "--in-file", dir_enc, "--out-dir", dir_dest,
+            "--password", password
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        with open(os.path.join(dir_dest, "info.txt"), "r", encoding="utf-8") as f:
+            assert f.read() == "directorio_kdf_v113"
+            
+        print("    [OK] Cifrado y descifrado de directorios con KDF via CLI exitoso.")
+        
+    finally:
+        for f in [temp_file, temp_enc, temp_dec, dir_enc]:
+            if os.path.exists(f):
+                os.remove(f)
+        for d in [dir_orig, dir_dest]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.3 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.2")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.3")
     print("=" * 75)
     
     try:
@@ -1942,7 +2038,10 @@ def main():
         # Tests v1.1.2
         test_nuevas_caracteristicas_v112()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.2 PASARON EXITOSAMENTE!")
+        # Tests v1.1.3
+        test_nuevas_caracteristicas_v113()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.3 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

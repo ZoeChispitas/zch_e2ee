@@ -1207,13 +1207,41 @@ def desencriptar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, clave_p
         raise ErrorDescifrado(f"Fallo al descifrar archivo multi-destinatario: {e}")
 
 # =====================================================================
-# APARTADO CONTRASEÑA TRADICIONAL (SÉMETRICA - SCRYPT + AES-GCM + KVV)
+# APARTADO CONTRASEÑA TRADICIONAL (SIMÉTRICA - KDF CONFIGURABLE + AES-GCM + KVV)
 # =====================================================================
 
-def encriptar_con_password(mensaje: str, password: str) -> str:
+def _derivar_clave_password(password: bytes, sal: bytes, kdf_name: str, params: dict) -> bytes:
+    if kdf_name == "scrypt":
+        n = params.get("n", 2**14)
+        r = params.get("r", 8)
+        p = params.get("p", 1)
+        kdf = Scrypt(
+            salt=sal,
+            length=32,
+            n=n,
+            r=r,
+            p=p
+        )
+    elif kdf_name == "argon2id":
+        memory_cost = params.get("memory_cost", 65536)
+        time_cost = params.get("time_cost", 3)
+        parallelism = params.get("parallelism", 4)
+        from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+        kdf = Argon2id(
+            memory_cost=memory_cost,
+            iterations=time_cost,
+            lanes=parallelism,
+            salt=sal,
+            length=32
+        )
+    else:
+        raise ValueError(f"KDF no soportado: {kdf_name}")
+    return kdf.derive(password)
+
+def encriptar_con_password(mensaje: str, password: str, kdf_name: str = "scrypt", **kdf_params) -> str:
     """
     Cifra un mensaje de texto usando una contraseña tradicional (cifrado simétrico).
-    Deriva la clave de 256 bits usando Scrypt, y cifra con AES-GCM.
+    Deriva la clave usando Scrypt o Argon2id con parámetros configurables.
     Retorna un payload codificado en Base64.
     """
     try:
@@ -1224,15 +1252,22 @@ def encriptar_con_password(mensaje: str, password: str) -> str:
         sal = os.urandom(16)
         nonce = os.urandom(12)
         
-        # Derivar clave AES con Scrypt
-        kdf = Scrypt(
-            salt=sal,
-            length=32,
-            n=2**14,
-            r=8,
-            p=1
-        )
-        clave_aes = kdf.derive(password.encode('utf-8'))
+        es_clasico = (kdf_name == "scrypt" and not kdf_params)
+        
+        # Normalizar parámetros
+        params = {}
+        if kdf_name == "scrypt":
+            params["n"] = kdf_params.get("n", 2**14)
+            params["r"] = kdf_params.get("r", 8)
+            params["p"] = kdf_params.get("p", 1)
+        elif kdf_name == "argon2id":
+            params["memory_cost"] = kdf_params.get("memory_cost", 65536)
+            params["time_cost"] = kdf_params.get("time_cost", 3)
+            params["parallelism"] = kdf_params.get("parallelism", 4)
+        else:
+            raise ValueError(f"KDF no soportado: {kdf_name}")
+            
+        clave_aes = _derivar_clave_password(password.encode('utf-8'), sal, kdf_name, params)
         
         # Calcular KVV (Key Verification Value) de 4 bytes
         kvv = calcular_hmac(b"verifier", clave_aes)[:4]
@@ -1241,37 +1276,60 @@ def encriptar_con_password(mensaje: str, password: str) -> str:
         aesgcm = AESGCM(clave_aes)
         texto_cifrado = aesgcm.encrypt(nonce, datos_mensaje, None)
         
-        # Empaquetar: [sal (16 bytes)] + [nonce (12 bytes)] + [kvv (4 bytes)] + [texto_cifrado]
-        paquete = sal + nonce + kvv + texto_cifrado
+        if es_clasico:
+            # Empaquetar: [sal (16 bytes)] + [nonce (12 bytes)] + [kvv (4 bytes)] + [texto_cifrado]
+            paquete = sal + nonce + kvv + texto_cifrado
+        else:
+            # Formato moderno autodescriptivo
+            meta = {
+                "kdf": kdf_name,
+                "params": params
+            }
+            meta_bytes = json.dumps(meta).encode('utf-8')
+            meta_len = len(meta_bytes)
+            paquete = b"ZCHKDF" + meta_len.to_bytes(2, byteorder='big') + meta_bytes + sal + nonce + kvv + texto_cifrado
+            
         return base64.b64encode(paquete).decode('utf-8')
     except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
         raise CriptoError(f"Error al encriptar con contraseña: {e}")
 
 def desencriptar_con_password(payload_b64: str, password: str) -> str:
     """
-    Descifra un mensaje cifrado con contraseña usando Scrypt y AES-GCM.
+    Descifra un mensaje cifrado con contraseña usando Scrypt o Argon2id.
     """
     try:
         paquete = base64.b64decode(payload_b64.encode('utf-8'))
         
-        tamanio_sal = 16
-        tamanio_nonce = 12
-        
-        # Extraer componentes
-        sal = paquete[:tamanio_sal]
-        nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
-        kvv = paquete[tamanio_sal + tamanio_nonce : tamanio_sal + tamanio_nonce + 4]
-        texto_cifrado = paquete[tamanio_sal + tamanio_nonce + 4:]
-        
-        # Derivar la misma clave usando la sal extraida
-        kdf = Scrypt(
-            salt=sal,
-            length=32,
-            n=2**14,
-            r=8,
-            p=1
-        )
-        clave_aes = kdf.derive(password.encode('utf-8'))
+        # Determinar si tiene el prefijo de metadatos autodescriptivo
+        if paquete.startswith(b"ZCHKDF"):
+            meta_len = int.from_bytes(paquete[6:8], byteorder='big')
+            meta_bytes = paquete[8 : 8 + meta_len]
+            meta = json.loads(meta_bytes.decode('utf-8'))
+            
+            kdf_name = meta["kdf"]
+            params = meta["params"]
+            
+            offset = 8 + meta_len
+            sal = paquete[offset : offset + 16]
+            nonce = paquete[offset + 16 : offset + 16 + 12]
+            kvv = paquete[offset + 16 + 12 : offset + 16 + 12 + 4]
+            texto_cifrado = paquete[offset + 16 + 12 + 4:]
+        else:
+            # Formato clásico de v1.1.2 o anterior
+            kdf_name = "scrypt"
+            params = {"n": 2**14, "r": 8, "p": 1}
+            
+            tamanio_sal = 16
+            tamanio_nonce = 12
+            
+            sal = paquete[:tamanio_sal]
+            nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
+            kvv = paquete[tamanio_sal + tamanio_nonce : tamanio_sal + tamanio_nonce + 4]
+            texto_cifrado = paquete[tamanio_sal + tamanio_nonce + 4:]
+            
+        clave_aes = _derivar_clave_password(password.encode('utf-8'), sal, kdf_name, params)
         
         # Verificar KVV
         kvv_calculado = calcular_hmac(b"verifier", clave_aes)[:4]
@@ -1360,10 +1418,10 @@ def desencriptar_y_verificar_e2ee(payload_b64: str, clave_privada_destinatario, 
 
 # ----------------- ARCHIVOS Y DIRECTORIOS CON CONTRASEÑA -----------------
 
-def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password: str):
+def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password: str, kdf_name: str = "scrypt", **kdf_params):
     """
     Encripta un archivo completo de forma simetrica usando una contraseña.
-    Aplica compresion zlib, deriva la clave mediante Scrypt y cifra usando AES-GCM.
+    Aplica compresion zlib, deriva la clave mediante Scrypt o Argon2id y cifra usando AES-GCM.
     Usa el formato con cabecera ZCH v2 (Modo 0x03).
     """
     try:
@@ -1377,15 +1435,21 @@ def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password
         sal = os.urandom(16)
         nonce = os.urandom(12)
         
-        # Derivar clave
-        kdf = Scrypt(
-            salt=sal,
-            length=32,
-            n=2**14,
-            r=8,
-            p=1
-        )
-        clave_aes = kdf.derive(password.encode('utf-8'))
+        es_clasico = (kdf_name == "scrypt" and not kdf_params)
+        
+        params = {}
+        if kdf_name == "scrypt":
+            params["n"] = kdf_params.get("n", 2**14)
+            params["r"] = kdf_params.get("r", 8)
+            params["p"] = kdf_params.get("p", 1)
+        elif kdf_name == "argon2id":
+            params["memory_cost"] = kdf_params.get("memory_cost", 65536)
+            params["time_cost"] = kdf_params.get("time_cost", 3)
+            params["parallelism"] = kdf_params.get("parallelism", 4)
+        else:
+            raise ValueError(f"KDF no soportado: {kdf_name}")
+            
+        clave_aes = _derivar_clave_password(password.encode('utf-8'), sal, kdf_name, params)
         
         # Calcular KVV
         kvv = calcular_hmac(b"verifier", clave_aes)[:4]
@@ -1394,18 +1458,31 @@ def encriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password
         aesgcm = AESGCM(clave_aes)
         datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
         
-        # Escribir el archivo final v2: [ZCH\x02\x03] + [sal (16 bytes)] + [nonce (12 bytes)] + [kvv (4 bytes)] + [datos_cifrados]
+        # Escribir el archivo final v2: [ZCH\x02\x03] + cuerpo
         cabecera = b"ZCH\x02\x03"
+        if es_clasico:
+            cuerpo = sal + nonce + kvv + datos_cifrados
+        else:
+            meta = {
+                "kdf": kdf_name,
+                "params": params
+            }
+            meta_bytes = json.dumps(meta).encode('utf-8')
+            meta_len = len(meta_bytes)
+            cuerpo = b"ZCHKDF" + meta_len.to_bytes(2, byteorder='big') + meta_bytes + sal + nonce + kvv + datos_cifrados
+            
         with open(ruta_destino, 'wb') as f:
-            f.write(cabecera + sal + nonce + kvv + datos_cifrados)
+            f.write(cabecera + cuerpo)
     except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
         raise CriptoError(f"Error al encriptar archivo con contraseña: {e}")
 
 def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, password: str):
     """
-    Descifra un archivo cifrado con contraseña usando Scrypt y AES-GCM,
+    Descifra un archivo cifrado con contraseña usando Scrypt o Argon2id,
     descomprimiendo los datos para recuperar el archivo original.
-    Soporta cabecera ZCH v2 y formato legacy.
+    Soporta cabecera ZCH v2 (Modo 0x03) autodescriptiva y formato legacy.
     """
     try:
         with open(ruta_origen, 'rb') as f:
@@ -1418,20 +1495,30 @@ def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, passw
             modo = paquete[4]
             if modo != 0x03:
                 raise ErrorClave(f"Modo de cifrado inesperado en archivo: {modo}")
-            sal = paquete[5 : 5 + tamanio_sal]
-            nonce = paquete[5 + tamanio_sal : 5 + tamanio_sal + tamanio_nonce]
-            kvv = paquete[5 + tamanio_sal + tamanio_nonce : 5 + tamanio_sal + tamanio_nonce + 4]
-            datos_cifrados = paquete[5 + tamanio_sal + tamanio_nonce + 4:]
-            
-            # Derivar la misma clave usando la sal
-            kdf = Scrypt(
-                salt=sal,
-                length=32,
-                n=2**14,
-                r=8,
-                p=1
-            )
-            clave_aes = kdf.derive(password.encode('utf-8'))
+                
+            cuerpo = paquete[5:]
+            if cuerpo.startswith(b"ZCHKDF"):
+                meta_len = int.from_bytes(cuerpo[6:8], byteorder='big')
+                meta_bytes = cuerpo[8 : 8 + meta_len]
+                meta = json.loads(meta_bytes.decode('utf-8'))
+                
+                kdf_name = meta["kdf"]
+                params = meta["params"]
+                
+                offset = 8 + meta_len
+                sal = cuerpo[offset : offset + 16]
+                nonce = cuerpo[offset + 16 : offset + 16 + 12]
+                kvv = cuerpo[offset + 16 + 12 : offset + 16 + 12 + 4]
+                datos_cifrados = cuerpo[offset + 16 + 12 + 4:]
+            else:
+                kdf_name = "scrypt"
+                params = {"n": 2**14, "r": 8, "p": 1}
+                sal = cuerpo[:tamanio_sal]
+                nonce = cuerpo[tamanio_sal : tamanio_sal + tamanio_nonce]
+                kvv = cuerpo[tamanio_sal + tamanio_nonce : tamanio_sal + tamanio_nonce + 4]
+                datos_cifrados = cuerpo[tamanio_sal + tamanio_nonce + 4:]
+                
+            clave_aes = _derivar_clave_password(password.encode('utf-8'), sal, kdf_name, params)
             
             # Verificar KVV
             kvv_calculado = calcular_hmac(b"verifier", clave_aes)[:4]
@@ -1443,14 +1530,9 @@ def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, passw
             nonce = paquete[tamanio_sal : tamanio_sal + tamanio_nonce]
             datos_cifrados = paquete[tamanio_sal + tamanio_nonce:]
             
-            kdf = Scrypt(
-                salt=sal,
-                length=32,
-                n=2**14,
-                r=8,
-                p=1
-            )
-            clave_aes = kdf.derive(password.encode('utf-8'))
+            kdf_name = "scrypt"
+            params = {"n": 2**14, "r": 8, "p": 1}
+            clave_aes = _derivar_clave_password(password.encode('utf-8'), sal, kdf_name, params)
         
         # Descifrar y descomprimir
         try:
@@ -1467,10 +1549,10 @@ def desencriptar_archivo_con_password(ruta_origen: str, ruta_destino: str, passw
             raise
         raise ErrorDescifrado(f"Fallo al desencriptar el archivo con contraseña: {e}")
 
-def encriptar_directorio_con_password(ruta_directorio: str, ruta_destino: str, password: str):
+def encriptar_directorio_con_password(ruta_directorio: str, ruta_destino: str, password: str, kdf_name: str = "scrypt", **kdf_params):
     """
     Comprime un directorio completo en un archivo temporal ZIP y luego lo cifra
-    usando una contraseña simétrica.
+    usando una contraseña simétrica con KDF configurable.
     """
     temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
     ruta_temp_zip = temp_zip.name
@@ -1484,7 +1566,7 @@ def encriptar_directorio_con_password(ruta_directorio: str, ruta_destino: str, p
                     ruta_relativa = os.path.relpath(ruta_completa, ruta_directorio)
                     zipf.write(ruta_completa, arcname=ruta_relativa)
                     
-        encriptar_archivo_con_password(ruta_temp_zip, ruta_destino, password)
+        encriptar_archivo_con_password(ruta_temp_zip, ruta_destino, password, kdf_name=kdf_name, **kdf_params)
     finally:
         if os.path.exists(ruta_temp_zip):
             os.remove(ruta_temp_zip)
