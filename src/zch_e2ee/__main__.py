@@ -80,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.3)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.4)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -97,12 +97,16 @@ def menu_interactivo():
         print("  13. Calcular o verificar hash SHA-256 de archivo")
         print("  14. Calcular o verificar HMAC de archivo")
         print("  15. Simular sesión interactiva de Double Ratchet")
-        print("  16. Cifrar un directorio completo para múltiples destinatarios")
-        print("  17. Descifrar un directorio completo multi-destinatario")
-        print("  18. Salir")
+        print("  16. Cifrar un archivo para múltiples destinatarios")
+        print("  17. Descifrar un archivo multi-destinatario")
+        print("  18. Cifrar un texto para múltiples destinatarios")
+        print("  19. Descifrar un texto multi-destinatario")
+        print("  20. Cifrar un directorio completo para múltiples destinatarios")
+        print("  21. Descifrar un directorio completo multi-destinatario")
+        print("  22. Salir")
         print("=" * 70)
         
-        opcion = input("Selecciona una opción (1-18): ").strip()
+        opcion = input("Selecciona una opción (1-22): ").strip()
         
         if opcion == "1":
             print("\n--- Generar Llaves ---")
@@ -662,6 +666,217 @@ def menu_interactivo():
                 imprimir_error(f"Error en la simulación: {e}")
 
         elif opcion == "16":
+            print("\n--- Cifrar Archivo Multi-destinatario ---")
+            ruta_orig = input("Ruta del archivo origen: ").strip()
+            if not os.path.exists(ruta_orig) or os.path.isdir(ruta_orig):
+                imprimir_error("El archivo de origen no existe o es una carpeta.")
+                continue
+            ruta_dest = input("Ruta del archivo cifrado de salida: ").strip()
+            
+            print("  a. Cargar llaves públicas (.pem) desde archivos")
+            print("  b. Cargar llaves públicas desde un Keystore")
+            modo_llaves = input("Selecciona opción (a/b): ").strip().lower()
+            
+            try:
+                llaves_publicas = []
+                if modo_llaves == "a":
+                    rutas_str = input("Ingresa las rutas de las llaves públicas (.pem) separadas por comas: ").strip()
+                    for r in rutas_str.split(","):
+                        r = r.strip()
+                        if r:
+                            try:
+                                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(r)
+                            except Exception:
+                                pub = zch_e2ee.cargar_llave_publica_desde_archivo(r)
+                            llaves_publicas.append(pub)
+                elif modo_llaves == "b":
+                    ruta_ks = input("Ruta del Keystore (.json): ").strip()
+                    pwd_ks = input("Contraseña del Keystore: ").strip()
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                    aliases_str = input("Ingresa los alias de contacto separados por comas: ").strip()
+                    for a in aliases_str.split(","):
+                        a = a.strip()
+                        if a:
+                            pub = ks.obtener_clave_contacto(a)
+                            llaves_publicas.append(pub)
+                else:
+                    imprimir_error("Opción inválida.")
+                    continue
+                
+                if not llaves_publicas:
+                    imprimir_error("No se ingresaron llaves públicas válidas.")
+                    continue
+                    
+                zch_e2ee.encriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas)
+                imprimir_exito("Archivo cifrado para múltiples destinatarios con éxito.")
+            except Exception as e:
+                imprimir_error(f"Fallo al cifrar archivo: {e}")
+                
+        elif opcion == "17":
+            print("\n--- Descifrar Archivo Multi-destinatario ---")
+            ruta_orig = input("Ruta del archivo cifrado: ").strip()
+            if not os.path.exists(ruta_orig):
+                imprimir_error("El archivo cifrado no existe.")
+                continue
+            ruta_dest = input("Ruta del archivo descifrado de salida: ").strip()
+            
+            print("  a. Cargar llave privada (.pem) desde archivo")
+            print("  b. Cargar llave privada desde un Keystore")
+            modo_llave = input("Selecciona opción (a/b): ").strip().lower()
+            
+            try:
+                priv = None
+                key_alias = None
+                ruta_ks = None
+                pwd_ks = None
+                
+                if modo_llave == "a":
+                    ruta_priv = input("Ruta de la llave privada: ").strip()
+                    pwd = input("Contraseña de la llave (Enter si no tiene): ").strip() or None
+                    try:
+                        priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv, pwd)
+                    except Exception:
+                        priv = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv, pwd)
+                elif modo_llave == "b":
+                    ruta_ks = input("Ruta del Keystore (.json): ").strip()
+                    pwd_ks = input("Contraseña del Keystore: ").strip()
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                    key_alias = input("Alias de tu llave privada: ").strip()
+                    priv = ks.obtener_clave_privada(key_alias)
+                else:
+                    imprimir_error("Opción inválida.")
+                    continue
+                
+                if not priv:
+                    imprimir_error("No se pudo cargar la llave privada.")
+                    continue
+                    
+                exito = False
+                try:
+                    zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv)
+                    exito = True
+                except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                    if key_alias and ruta_ks and pwd_ks:
+                        ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                        historial = ks.obtener_historial_clave_privada(key_alias)
+                        for priv_hist in historial:
+                            try:
+                                zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
+                                exito = True
+                                break
+                            except Exception:
+                                continue
+                if not exito:
+                    raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el archivo multi-destinatario (incluso usando historial de claves).")
+                imprimir_exito("Archivo descifrado con éxito.")
+            except Exception as e:
+                imprimir_error(f"Fallo al descifrar archivo: {e}")
+
+        elif opcion == "18":
+            print("\n--- Cifrar Texto Multi-destinatario ---")
+            texto = input("Ingresa el texto a cifrar: ")
+            
+            print("  a. Cargar llaves públicas (.pem) desde archivos")
+            print("  b. Cargar llaves públicas desde un Keystore")
+            modo_llaves = input("Selecciona opción (a/b): ").strip().lower()
+            
+            try:
+                llaves_publicas = []
+                if modo_llaves == "a":
+                    rutas_str = input("Ingresa las rutas de las llaves públicas (.pem) separadas por comas: ").strip()
+                    for r in rutas_str.split(","):
+                        r = r.strip()
+                        if r:
+                            try:
+                                pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(r)
+                            except Exception:
+                                pub = zch_e2ee.cargar_llave_publica_desde_archivo(r)
+                            llaves_publicas.append(pub)
+                elif modo_llaves == "b":
+                    ruta_ks = input("Ruta del Keystore (.json): ").strip()
+                    pwd_ks = input("Contraseña del Keystore: ").strip()
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                    aliases_str = input("Ingresa los alias de contacto separados por comas: ").strip()
+                    for a in aliases_str.split(","):
+                        a = a.strip()
+                        if a:
+                            pub = ks.obtener_clave_contacto(a)
+                            llaves_publicas.append(pub)
+                else:
+                    imprimir_error("Opción inválida.")
+                    continue
+                
+                if not llaves_publicas:
+                    imprimir_error("No se ingresaron llaves públicas válidas.")
+                    continue
+                    
+                cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
+                print("\nTexto cifrado en Base64:")
+                print(cifrado)
+                imprimir_exito("Texto cifrado con éxito.")
+            except Exception as e:
+                imprimir_error(f"Fallo al cifrar texto: {e}")
+
+        elif opcion == "19":
+            print("\n--- Descifrar Texto Multi-destinatario ---")
+            texto_cifrado = input("Ingresa el texto cifrado (Base64): ").strip()
+            
+            print("  a. Cargar llave privada (.pem) desde archivo")
+            print("  b. Cargar llave privada desde un Keystore")
+            modo_llave = input("Selecciona opción (a/b): ").strip().lower()
+            
+            try:
+                priv = None
+                key_alias = None
+                ruta_ks = None
+                pwd_ks = None
+                
+                if modo_llave == "a":
+                    ruta_priv = input("Ruta de la llave privada: ").strip()
+                    pwd = input("Contraseña de la llave (Enter si no tiene): ").strip() or None
+                    try:
+                        priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv, pwd)
+                    except Exception:
+                        priv = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv, pwd)
+                elif modo_llave == "b":
+                    ruta_ks = input("Ruta del Keystore (.json): ").strip()
+                    pwd_ks = input("Contraseña del Keystore: ").strip()
+                    ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                    key_alias = input("Alias de tu llave privada: ").strip()
+                    priv = ks.obtener_clave_privada(key_alias)
+                else:
+                    imprimir_error("Opción inválida.")
+                    continue
+                
+                if not priv:
+                    imprimir_error("No se pudo cargar la llave privada.")
+                    continue
+                    
+                exito = False
+                descifrado = None
+                try:
+                    descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
+                    exito = True
+                except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                    if key_alias and ruta_ks and pwd_ks:
+                        ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                        historial = ks.obtener_historial_clave_privada(key_alias)
+                        for priv_hist in historial:
+                            try:
+                                descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
+                                exito = True
+                                break
+                            except Exception:
+                                continue
+                if not exito:
+                    raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el texto (incluso usando historial de claves).")
+                print("\nTexto descifrado:")
+                print(descifrado)
+                imprimir_exito("Texto descifrado con éxito.")
+            except Exception as e:
+                imprimir_error(f"Fallo al descifrar texto: {e}")
+
+        elif opcion == "20":
             print("\n--- Cifrar Directorio Multi-destinatario ---")
             ruta_orig = input("Ruta del directorio origen: ").strip()
             if not os.path.exists(ruta_orig) or not os.path.isdir(ruta_orig):
@@ -708,7 +923,7 @@ def menu_interactivo():
             except Exception as e:
                 imprimir_error(f"Fallo al cifrar directorio multi-destinatario: {e}")
                 
-        elif opcion == "17":
+        elif opcion == "21":
             print("\n--- Descifrar Directorio Multi-destinatario ---")
             ruta_orig = input("Ruta del archivo cifrado: ").strip()
             if not os.path.exists(ruta_orig):
@@ -722,6 +937,9 @@ def menu_interactivo():
             
             try:
                 priv = None
+                key_alias = None
+                ruta_ks = None
+                pwd_ks = None
                 if modo_llave == "a":
                     ruta_priv = input("Ruta de la llave privada: ").strip()
                     pwd = input("Contraseña de la llave (Enter si no tiene): ").strip() or None
@@ -733,8 +951,8 @@ def menu_interactivo():
                     ruta_ks = input("Ruta del Keystore (.json): ").strip()
                     pwd_ks = input("Contraseña del Keystore: ").strip()
                     ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
-                    alias = input("Alias de tu llave privada: ").strip()
-                    priv = ks.obtener_clave_privada(alias)
+                    key_alias = input("Alias de tu llave privada: ").strip()
+                    priv = ks.obtener_clave_privada(key_alias)
                 else:
                     imprimir_error("Opción inválida.")
                     continue
@@ -743,12 +961,28 @@ def menu_interactivo():
                     imprimir_error("No se pudo cargar la llave privada.")
                     continue
                     
-                zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv)
+                exito = False
+                try:
+                    zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv)
+                    exito = True
+                except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                    if key_alias and ruta_ks and pwd_ks:
+                        ks = zch_e2ee.KeystoreZCH.cargar(ruta_ks, pwd_ks)
+                        historial = ks.obtener_historial_clave_privada(key_alias)
+                        for priv_hist in historial:
+                            try:
+                                zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
+                                exito = True
+                                break
+                            except Exception:
+                                continue
+                if not exito:
+                    raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el directorio multi-destinatario (incluso usando historial de claves).")
                 imprimir_exito("Directorio descifrado con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al descifrar directorio multi-destinatario: {e}")
                 
-        elif opcion == "18":
+        elif opcion == "22":
             print("\n¡Hasta luego! Mantente seguro.")
             break
         else:
@@ -817,7 +1051,7 @@ def main():
         subparser.add_argument("--kdf-time", type=int, help="Costo de tiempo para Argon2id")
         subparser.add_argument("--kdf-parallel", type=int, help="Paralelismo para Argon2id")
 
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.3 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.4 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -1031,6 +1265,42 @@ def main():
     sub_dec_dir_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
     sub_dec_dir_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
     sub_dec_dir_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+
+    # encrypt-multi
+    sub_enc_multi = subparsers.add_parser("encrypt-multi", help="Cifrar un archivo para múltiples destinatarios")
+    sub_enc_multi.add_argument("--in-file", required=True, help="Archivo original a cifrar")
+    sub_enc_multi.add_argument("--out-file", required=True, help="Archivo cifrado de salida")
+    sub_enc_multi.add_argument("--keys-public", help="Rutas de llaves públicas (.pem) separadas por comas")
+    sub_enc_multi.add_argument("--keys-aliases", help="Alias de llaves de contacto en Keystore separados por comas")
+    sub_enc_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias")
+    sub_enc_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+
+    # decrypt-multi
+    sub_dec_multi = subparsers.add_parser("decrypt-multi", help="Descifrar un archivo de múltiples destinatarios")
+    sub_dec_multi.add_argument("--in-file", required=True, help="Archivo cifrado a descifrar")
+    sub_dec_multi.add_argument("--out-file", required=True, help="Archivo descifrado de salida")
+    sub_dec_multi.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
+    sub_dec_multi.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
+    sub_dec_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
+    sub_dec_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
+    sub_dec_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+
+    # encrypt-text-multi
+    sub_enc_txt_multi = subparsers.add_parser("encrypt-text-multi", help="Cifrar un texto para múltiples destinatarios")
+    sub_enc_txt_multi.add_argument("--text", help="Texto original a cifrar (omitir si se usa --stdin)")
+    sub_enc_txt_multi.add_argument("--keys-public", help="Rutas de llaves públicas (.pem) separadas por comas")
+    sub_enc_txt_multi.add_argument("--keys-aliases", help="Alias de llaves de contacto en Keystore separados por comas")
+    sub_enc_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias")
+    sub_enc_txt_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+
+    # decrypt-text-multi
+    sub_dec_txt_multi = subparsers.add_parser("decrypt-text-multi", help="Descifrar un texto de múltiples destinatarios")
+    sub_dec_txt_multi.add_argument("--text", help="Texto cifrado (Base64) a descifrar (omitir si se usa --stdin)")
+    sub_dec_txt_multi.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
+    sub_dec_txt_multi.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
+    sub_dec_txt_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
+    sub_dec_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
+    sub_dec_txt_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
 
     # ratchet-init
     sub_rat_init = subparsers.add_parser("ratchet-init", help="Inicializar un archivo de sesión Double Ratchet")
@@ -1867,6 +2137,186 @@ def main():
             imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar directorio multi-destinatario: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "encrypt-multi":
+        try:
+            llaves_publicas = []
+            if args.keys_public:
+                for path in args.keys_public.split(","):
+                    path = path.strip()
+                    if path:
+                        try:
+                            pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(path)
+                        except Exception:
+                            pub = zch_e2ee.cargar_llave_publica_desde_archivo(path)
+                        llaves_publicas.append(pub)
+            
+            if args.keys_aliases:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar llaves usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                for alias in args.keys_aliases.split(","):
+                    alias = alias.strip()
+                    if alias:
+                        pub = ks.obtener_clave_contacto(alias)
+                        llaves_publicas.append(pub)
+            
+            if not llaves_publicas:
+                imprimir_error("Debe especificar al menos una llave pública válida usando --keys-public o --keys-aliases.", args.json)
+                sys.exit(1)
+                
+            zch_e2ee.encriptar_archivo_e2ee_multi(args.in_file, args.out_file, llaves_publicas)
+            imprimir_exito(f"Archivo cifrado guardado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
+        except Exception as e:
+            imprimir_error(f"Fallo al cifrar archivo multi-destinatario: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "decrypt-multi":
+        try:
+            priv = None
+            if args.key_private:
+                try:
+                    priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
+                except Exception:
+                    priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_private, args.key_password)
+            
+            elif args.key_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                priv = ks.obtener_clave_privada(args.key_alias)
+                
+            else:
+                imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
+                sys.exit(1)
+                
+            exito = False
+            try:
+                zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv)
+                exito = True
+            except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                if args.key_alias and args.keystore and args.password:
+                    ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                    historial = ks.obtener_historial_clave_privada(args.key_alias)
+                    for priv_hist in historial:
+                        try:
+                            zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv_hist)
+                            exito = True
+                            break
+                        except Exception:
+                            continue
+            if not exito:
+                raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el archivo multi-destinatario (incluso usando historial de claves).")
+            imprimir_exito(f"Archivo descifrado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
+        except Exception as e:
+            imprimir_error(f"Fallo al descifrar archivo multi-destinatario: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "encrypt-text-multi":
+        try:
+            texto = args.text
+            if not texto and args.stdin:
+                texto = sys.stdin.read()
+            if not texto:
+                imprimir_error("Debe proporcionar el texto a cifrar usando --text o --stdin.", args.json)
+                sys.exit(1)
+                
+            llaves_publicas = []
+            if args.keys_public:
+                for path in args.keys_public.split(","):
+                    path = path.strip()
+                    if path:
+                        try:
+                            pub = zch_e2ee.cargar_llave_publica_ec_desde_archivo(path)
+                        except Exception:
+                            pub = zch_e2ee.cargar_llave_publica_desde_archivo(path)
+                        llaves_publicas.append(pub)
+            
+            if args.keys_aliases:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar llaves usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                for alias in args.keys_aliases.split(","):
+                    alias = alias.strip()
+                    if alias:
+                        pub = ks.obtener_clave_contacto(alias)
+                        llaves_publicas.append(pub)
+            
+            if not llaves_publicas:
+                imprimir_error("Debe especificar al menos una llave pública válida usando --keys-public o --keys-aliases.", args.json)
+                sys.exit(1)
+                
+            cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
+            if args.json:
+                imprimir_exito("Texto cifrado.", args.json, {"cipher": cifrado})
+            else:
+                if args.stdout:
+                    sys.stdout.write(cifrado)
+                else:
+                    print(cifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al cifrar texto multi-destinatario: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "decrypt-text-multi":
+        try:
+            texto_cifrado = args.text
+            if not texto_cifrado and args.stdin:
+                texto_cifrado = sys.stdin.read().strip()
+            if not texto_cifrado:
+                imprimir_error("Debe proporcionar el texto cifrado usando --text o --stdin.", args.json)
+                sys.exit(1)
+                
+            priv = None
+            if args.key_private:
+                try:
+                    priv = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.key_private, args.key_password)
+                except Exception:
+                    priv = zch_e2ee.cargar_llave_privada_desde_archivo(args.key_private, args.key_password)
+            
+            elif args.key_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                priv = ks.obtener_clave_privada(args.key_alias)
+                
+            else:
+                imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
+                sys.exit(1)
+                
+            exito = False
+            descifrado = None
+            try:
+                descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
+                exito = True
+            except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                if args.key_alias and args.keystore and args.password:
+                    ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                    historial = ks.obtener_historial_clave_privada(args.key_alias)
+                    for priv_hist in historial:
+                        try:
+                            descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
+                            exito = True
+                            break
+                        except Exception:
+                            continue
+            if not exito:
+                raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el texto multi-destinatario (incluso usando historial de claves).")
+                
+            if args.json:
+                imprimir_exito("Texto descifrado.", args.json, {"plain": descifrado})
+            else:
+                if args.stdout:
+                    sys.stdout.write(descifrado)
+                else:
+                    print(descifrado)
+        except Exception as e:
+            imprimir_error(f"Fallo al descifrar texto multi-destinatario: {e}", args.json)
             sys.exit(1)
 
     elif args.command == "ratchet-init":

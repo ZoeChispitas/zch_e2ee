@@ -1974,9 +1974,146 @@ def test_nuevas_caracteristicas_v113():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.1.3 completadas con exito.")
 
+def test_nuevas_caracteristicas_v114():
+    print("\n--- TEST: Nuevas Caracteristicas v1.1.4 (Cifrado Multi-destinatario CLI y Keystore) ---")
+    
+    # Generar llaves para destinatarios
+    priv1, pub1 = zch_e2ee.generar_llaves_ec() # Alice
+    priv2, pub2 = zch_e2ee.generar_llaves_ec() # Bob
+    
+    # Guardar llaves
+    temp_pub1 = "temp_v114_alice_pub.pem"
+    temp_pub2 = "temp_v114_bob_pub.pem"
+    temp_priv1 = "temp_v114_alice_priv.pem"
+    temp_priv2 = "temp_v114_bob_priv.pem"
+    
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub1, temp_pub1)
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub2, temp_pub2)
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv1, temp_priv1)
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv2, temp_priv2)
+    
+    # 1. Probar cifrado/descifrado de texto multi-destinatario programático
+    mensaje = "Secreto compartido entre Alice y Bob en v1.1.4."
+    cifrado_txt = zch_e2ee.encriptar_e2ee_multi(mensaje, [pub1, pub2])
+    
+    desc_txt1 = zch_e2ee.desencriptar_e2ee_multi(cifrado_txt, priv1)
+    desc_txt2 = zch_e2ee.desencriptar_e2ee_multi(cifrado_txt, priv2)
+    
+    assert desc_txt1 == mensaje, "Fallo descifrado programático texto Alice."
+    assert desc_txt2 == mensaje, "Fallo descifrado programático texto Bob."
+    print("    [OK] Cifrado y descifrado programático de texto multi-destinatario exitoso.")
+    
+    # 2. Probar CLI
+    temp_file = "temp_v114_data.txt"
+    temp_enc = "temp_v114_data.enc"
+    temp_dec = "temp_v114_data_dec.txt"
+    
+    env_dict = os.environ.copy()
+    env_dict["PYTHONPATH"] = os.path.abspath("src")
+    
+    ruta_ks = "temp_v114_ks.json"
+    pwd_ks = "KeystorePassword123!"
+    
+    try:
+        # Escribir mensaje
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(mensaje)
+            
+        # Crear Keystore y agregar llaves
+        ks = zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd_ks)
+        ks.guardar_clave_contacto("alice_contact", pub1)
+        ks.guardar_clave_contacto("bob_contact", pub2)
+        ks.guardar_clave_propia("alice_key", priv1)
+        ks.guardar_clave_propia("bob_key", priv2)
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        # Test CLI: encrypt-text-multi usando alias y llaves directas
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text-multi",
+            "--text", mensaje,
+            "--keys-public", temp_pub1,
+            "--keys-aliases", "bob_contact",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cifrado_cli = json.loads(res.stdout)["cipher"]
+        
+        # Test CLI: decrypt-text-multi usando alias
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text-multi",
+            "--text", cifrado_cli,
+            "--key-alias", "alice_key",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["plain"] == mensaje
+        
+        print("    [OK] Cifrado y descifrado de texto multi-destinatario via CLI exitoso.")
+        
+        # Test CLI: encrypt-multi (archivos)
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-multi",
+            "--in-file", temp_file,
+            "--out-file", temp_enc,
+            "--keys-public", temp_pub1,
+            "--keys-aliases", "bob_contact",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        # Test CLI: decrypt-multi (archivos) usando alias
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-multi",
+            "--in-file", temp_enc,
+            "--out-file", temp_dec,
+            "--key-alias", "bob_key",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        with open(temp_dec, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        print("    [OK] Cifrado y descifrado de archivos multi-destinatario via CLI exitoso.")
+        
+        # 3. Test de Fallback con Historial en Multi-destinatario
+        # Rotamos la clave de Alice para generar historial
+        ks.rotar_clave("alice_key") # Nueva llave activa en Keystore
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        # Ciframos usando la clave nueva y la antigua desde Keystore
+        # (El descifrado de Alice usando la clave en el historial debe tener exito)
+        # Ciframos con la clave antigua de Alice (guardada en pub1/temp_pub1)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text-multi",
+            "--text", mensaje,
+            "--keys-public", temp_pub1
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cifrado_fallback = json.loads(res.stdout)["cipher"]
+        
+        # Desciframos con el alias 'alice_key' (la activa fallará, pero el fallback en historial debe pasar)
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text-multi",
+            "--text", cifrado_fallback,
+            "--key-alias", "alice_key",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["plain"] == mensaje
+        
+        print("    [OK] Fallback de llaves del historial en descifrado multi-destinatario exitoso.")
+        
+    finally:
+        # Limpiar
+        for f in [temp_pub1, temp_pub2, temp_priv1, temp_priv2, temp_file, temp_enc, temp_dec, ruta_ks]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.4 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.3")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.4")
     print("=" * 75)
     
     try:
@@ -2041,7 +2178,10 @@ def main():
         # Tests v1.1.3
         test_nuevas_caracteristicas_v113()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.3 PASARON EXITOSAMENTE!")
+        # Tests v1.1.4
+        test_nuevas_caracteristicas_v114()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.4 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()
