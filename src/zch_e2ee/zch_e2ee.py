@@ -1854,9 +1854,38 @@ class KeystoreZCH:
         data = json.loads(datos_json)
         
         ks = cls()
-        ks.claves_privadas = data.get("claves_privadas", {})
-        ks.claves_publicas = data.get("claves_publicas", {})
+        ks.claves_privadas = cls._normalizar_esquema(data.get("claves_privadas", {}))
+        ks.claves_publicas = cls._normalizar_esquema(data.get("claves_publicas", {}))
         return ks
+
+    @staticmethod
+    def _normalizar_esquema(claves_dict: dict) -> dict:
+        import datetime
+        normalizado = {}
+        for alias, valor in claves_dict.items():
+            if isinstance(valor, str):
+                # Legacy format (v1.1.1 or older): convert to structured dict
+                normalizado[alias] = {
+                    "pem": valor,
+                    "fecha_creacion": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "fecha_expiracion": None,
+                    "descripcion": "",
+                    "activo": True,
+                    "historial": []
+                }
+            elif isinstance(valor, dict):
+                # Structured format: ensure all fields exist
+                normalizado[alias] = {
+                    "pem": valor.get("pem", ""),
+                    "fecha_creacion": valor.get("fecha_creacion") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "fecha_expiracion": valor.get("fecha_expiracion", None),
+                    "descripcion": valor.get("descripcion", ""),
+                    "activo": valor.get("activo", True),
+                    "historial": valor.get("historial", [])
+                }
+            else:
+                normalizado[alias] = valor
+        return normalizado
 
     def guardar(self, ruta_archivo: str, password_maestro: str):
         data = {
@@ -1868,17 +1897,32 @@ class KeystoreZCH:
         with open(ruta_archivo, 'w', encoding='utf-8') as f:
             f.write(payload_b64)
 
-    def guardar_clave_propia(self, alias: str, clave_privada):
+    def guardar_clave_propia(self, alias: str, clave_privada, expiracion_dias: int = None, descripcion: str = ""):
+        import datetime
         if isinstance(clave_privada, rsa.RSAPrivateKey):
             pem = serializar_llave_privada(clave_privada)
         else:
             pem = serializar_llave_privada_ec(clave_privada)
-        self.claves_privadas[alias] = pem
+            
+        fecha_creacion = datetime.datetime.now(datetime.timezone.utc)
+        fecha_expiracion = None
+        if expiracion_dias is not None:
+            fecha_expiracion = (fecha_creacion + datetime.timedelta(days=expiracion_dias)).isoformat()
+            
+        self.claves_privadas[alias] = {
+            "pem": pem,
+            "fecha_creacion": fecha_creacion.isoformat(),
+            "fecha_expiracion": fecha_expiracion,
+            "descripcion": descripcion,
+            "activo": True,
+            "historial": []
+        }
 
     def obtener_clave_privada(self, alias: str):
         if alias not in self.claves_privadas:
             raise ErrorClave(f"No se encontró la clave privada con el alias '{alias}'.")
-        pem = self.claves_privadas[alias]
+        info = self.claves_privadas[alias]
+        pem = info["pem"] if isinstance(info, dict) else info
         if "BEGIN PRIVATE KEY" in pem:
             try:
                 return cargar_llave_privada_ec(pem)
@@ -1887,21 +1931,132 @@ class KeystoreZCH:
         else:
             raise ErrorClave(f"Formato de clave no reconocido para '{alias}'.")
 
-    def guardar_clave_contacto(self, alias: str, clave_publica):
+    def guardar_clave_contacto(self, alias: str, clave_publica, expiracion_dias: int = None, descripcion: str = ""):
+        import datetime
         if isinstance(clave_publica, rsa.RSAPublicKey):
             pem = serializar_llave_publica(clave_publica)
         else:
             pem = serializar_llave_publica_ec(clave_publica)
-        self.claves_publicas[alias] = pem
+            
+        fecha_creacion = datetime.datetime.now(datetime.timezone.utc)
+        fecha_expiracion = None
+        if expiracion_dias is not None:
+            fecha_expiracion = (fecha_creacion + datetime.timedelta(days=expiracion_dias)).isoformat()
+            
+        self.claves_publicas[alias] = {
+            "pem": pem,
+            "fecha_creacion": fecha_creacion.isoformat(),
+            "fecha_expiracion": fecha_expiracion,
+            "descripcion": descripcion,
+            "activo": True,
+            "historial": []
+        }
 
     def obtener_clave_contacto(self, alias: str):
         if alias not in self.claves_publicas:
             raise ErrorClave(f"No se encontró la clave pública del contacto '{alias}'.")
-        pem = self.claves_publicas[alias]
+        info = self.claves_publicas[alias]
+        pem = info["pem"] if isinstance(info, dict) else info
         try:
             return cargar_llave_publica_ec(pem)
         except Exception:
             return cargar_llave_publica(pem)
+
+    def obtener_historial_clave_privada(self, alias: str) -> list:
+        if alias not in self.claves_privadas:
+            return []
+        info = self.claves_privadas[alias]
+        if not isinstance(info, dict):
+            return []
+        keys = []
+        for hist_item in info.get("historial", []):
+            pem = hist_item["pem"]
+            if "BEGIN PRIVATE KEY" in pem:
+                try:
+                    keys.append(cargar_llave_privada_ec(pem))
+                except Exception:
+                    keys.append(cargar_llave_privada(pem))
+        return keys
+
+    def obtener_historial_clave_contacto(self, alias: str) -> list:
+        if alias not in self.claves_publicas:
+            return []
+        info = self.claves_publicas[alias]
+        if not isinstance(info, dict):
+            return []
+        keys = []
+        for hist_item in info.get("historial", []):
+            pem = hist_item["pem"]
+            try:
+                keys.append(cargar_llave_publica_ec(pem))
+            except Exception:
+                keys.append(cargar_llave_publica(pem))
+        return keys
+
+    def rotar_clave(self, alias: str, nueva_clave_pem: str = None, expiracion_dias: int = None):
+        import datetime
+        es_privada = alias in self.claves_privadas
+        es_publica = alias in self.claves_publicas
+        
+        if not es_privada and not es_publica:
+            raise ErrorClave(f"El alias '{alias}' no existe en el llavero.")
+            
+        info = self.claves_privadas[alias] if es_privada else self.claves_publicas[alias]
+        
+        if isinstance(info, str):
+            info = {
+                "pem": info,
+                "fecha_creacion": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "fecha_expiracion": None,
+                "descripcion": "",
+                "activo": True,
+                "historial": []
+            }
+            
+        hist_item = {
+            "pem": info["pem"],
+            "fecha_creacion": info["fecha_creacion"],
+            "fecha_expiracion": info["fecha_expiracion"]
+        }
+        info["historial"].append(hist_item)
+        
+        if nueva_clave_pem is not None:
+            info["pem"] = nueva_clave_pem
+        else:
+            clave_actual = self.obtener_clave_privada(alias) if es_privada else self.obtener_clave_contacto(alias)
+            
+            if "RSAPrivateKey" in type(clave_actual).__name__:
+                bits = clave_actual.key_size
+                priv, pub = generar_llaves(bits)
+                info["pem"] = serializar_llave_privada(priv)
+            elif "RSAPublicKey" in type(clave_actual).__name__:
+                raise ErrorClave("No se puede autogenerar una llave pública sin su correspondiente clave privada.")
+            elif "X25519PrivateKey" in type(clave_actual).__name__:
+                priv, pub = generar_llaves_ec()
+                info["pem"] = serializar_llave_privada_ec(priv)
+            elif "X25519PublicKey" in type(clave_actual).__name__:
+                raise ErrorClave("No se puede autogenerar una llave pública EC sin su correspondiente clave privada.")
+            elif "Ed25519PrivateKey" in type(clave_actual).__name__:
+                priv, pub = generar_llaves_ed25519()
+                info["pem"] = serializar_llave_privada_ec(priv)
+            elif "Ed25519PublicKey" in type(clave_actual).__name__:
+                raise ErrorClave("No se puede autogenerar una llave pública Ed25519 sin su correspondiente clave privada.")
+            else:
+                raise ErrorClave("Tipo de clave no soportado para autogeneración durante la rotación.")
+                
+        fecha_creacion = datetime.datetime.now(datetime.timezone.utc)
+        info["fecha_creacion"] = fecha_creacion.isoformat()
+        
+        fecha_expiracion = None
+        if expiracion_dias is not None:
+            fecha_expiracion = (fecha_creacion + datetime.timedelta(days=expiracion_dias)).isoformat()
+        info["fecha_expiracion"] = fecha_expiracion
+        info["activo"] = True
+        
+        if es_privada:
+            self.claves_privadas[alias] = info
+        else:
+            self.claves_publicas[alias] = info
 
     def listar_alias(self) -> dict:
         """

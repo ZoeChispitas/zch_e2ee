@@ -1719,9 +1719,168 @@ def test_nuevas_caracteristicas_v111():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.1.1 completadas con exito.")
 
+
+def test_nuevas_caracteristicas_v112():
+    print("\n--- TEST: Nuevas Caracteristicas v1.1.2 (Rotacion, Expiracion y Fallback) ---")
+    
+    ruta_ks = "temp_ks_v112.json"
+    pwd_ks = "MasterPwd112!"
+    temp_file_old = "temp_old.txt"
+    temp_enc_old = "temp_old.enc"
+    temp_dec_old = "temp_old_dec.txt"
+    
+    env_dict = os.environ.copy()
+    env_dict["PYTHONPATH"] = os.path.abspath("src")
+    
+    try:
+        # 1. Crear Keystore
+        print("  Creando Keystore...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-create",
+            "--keystore", ruta_ks, "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # 2. Generar llave privada y publica EC para agregar al Keystore
+        print("  Generando par de llaves EC temporales...")
+        temp_priv_pem = "temp_ec_priv.pem"
+        temp_pub_pem = "temp_ec_pub.pem"
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "gen-keys",
+            "--type", "x25519", "--out-private", temp_priv_pem, "--out-public", temp_pub_pem
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # 3. Agregar llaves con descripcion y expiracion
+        print("  Agregando llaves al Keystore con descripcion y expiracion...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-add-key",
+            "--keystore", ruta_ks, "--password", pwd_ks,
+            "--alias", "test_key", "--key-file", temp_priv_pem, "--type", "private",
+            "--description", "Clave privada de prueba v112", "--expiration-days", "30"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-add-key",
+            "--keystore", ruta_ks, "--password", pwd_ks,
+            "--alias", "test_key_pub", "--key-file", temp_pub_pem, "--type", "public",
+            "--description", "Clave publica de prueba v112", "--expiration-days", "30"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # Limpiar archivos temporales de llaves
+        os.remove(temp_priv_pem)
+        os.remove(temp_pub_pem)
+        
+        # 4. Verificar listado detallado y expiracion
+        print("  Verificando listado detallado...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-list",
+            "--keystore", ruta_ks, "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_list = json.loads(res.stdout)
+        assert out_list["status"] == "success"
+        assert "test_key" in out_list["detailed_privadas"]
+        assert out_list["detailed_privadas"]["test_key"]["descripcion"] == "Clave privada de prueba v112"
+        assert out_list["detailed_privadas"]["test_key"]["fecha_expiracion"] is not None
+        
+        print("  Ejecutando verificacion de expiracion (keystore-check-expired)...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-check-expired",
+            "--keystore", ruta_ks, "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_expired = json.loads(res.stdout)
+        assert out_expired["status"] == "success"
+        report = out_expired["report"]
+        assert any(item["alias"] == "test_key" and item["expirada"] is False for item in report)
+        
+        # 5. Cifrar datos con la clave activa (vieja)
+        print("  Cifrando archivo con clave activa inicial...")
+        original_old = "Mensaje cifrado con la clave antigua que sera rotada."
+        with open(temp_file_old, "w", encoding="utf-8") as f:
+            f.write(original_old)
+            
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt",
+            "--in-file", temp_file_old, "--out-file", temp_enc_old,
+            "--key-alias", "test_key_pub",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # 6. Rotar clave en Keystore (autogenerando nueva - rotacion auto)
+        print("  Rotando la clave 'test_key' (autogeneracion)...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-rotate",
+            "--keystore", ruta_ks, "--password", pwd_ks,
+            "--alias", "test_key", "--expiration-days", "15"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        
+        # Verificar que el historial tenga 1 elemento
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-list",
+            "--keystore", ruta_ks, "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_list2 = json.loads(res.stdout)
+        assert out_list2["detailed_privadas"]["test_key"]["historial_count"] == 1
+
+        # 7. Rotar clave manualmente usando una nueva clave (rotacion manual)
+        print("  Generando segunda clave EC temporal para rotacion manual...")
+        temp_priv_pem_2 = "temp_ec_priv_2.pem"
+        temp_pub_pem_2 = "temp_ec_pub_2.pem"
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "gen-keys",
+            "--type", "x25519", "--out-private", temp_priv_pem_2, "--out-public", temp_pub_pem_2
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+
+        print("  Rotando la clave 'test_key' manualmente...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-rotate",
+            "--keystore", ruta_ks, "--password", pwd_ks,
+            "--alias", "test_key", "--new-key-file", temp_priv_pem_2
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+
+        # Limpiar archivos temporales
+        os.remove(temp_priv_pem_2)
+        os.remove(temp_pub_pem_2)
+
+        # Verificar que el historial tenga 2 elementos
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "keystore-list",
+            "--keystore", ruta_ks, "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        out_list3 = json.loads(res.stdout)
+        assert out_list3["detailed_privadas"]["test_key"]["historial_count"] == 2
+        
+        # 8. Descifrar archivo antiguo usando la clave privada rotada (debe activar fallback sobre historial)
+        print("  Descifrando archivo antiguo usando la clave privada rotada (debe activar fallback)...")
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt",
+            "--in-file", temp_enc_old, "--out-file", temp_dec_old,
+            "--key-alias", "test_key",
+            "--keystore", ruta_ks, "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["status"] == "success"
+        with open(temp_dec_old, "r", encoding="utf-8") as f:
+            dec_content = f.read()
+        assert dec_content == original_old, f"El descifrado falló. Esperado: '{original_old}', obtenido: '{dec_content}'"
+        print("    [OK] Descifrado con fallback sobre historial de 2 claves exitoso.")
+        
+    finally:
+        # Limpiar
+        for f in [ruta_ks, temp_file_old, temp_enc_old, temp_dec_old]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.2 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.1")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.2")
     print("=" * 75)
     
     try:
@@ -1780,7 +1939,10 @@ def main():
         # Tests v1.1.1
         test_nuevas_caracteristicas_v111()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.1 PASARON EXITOSAMENTE!")
+        # Tests v1.1.2
+        test_nuevas_caracteristicas_v112()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.2 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

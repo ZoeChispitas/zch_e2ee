@@ -80,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.1)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.2)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -789,7 +789,7 @@ def obtener_privada_desde_args(args, key_rsa_path=None, key_ec_path=None, key_al
     return None
 
 def main():
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.1 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.2 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -857,6 +857,22 @@ def main():
     sub_ks_add.add_argument("--key-file", required=True, help="Ruta del archivo PEM de la llave")
     sub_ks_add.add_argument("--type", choices=["private", "public"], required=True, help="Especificar si es clave pública o privada")
     sub_ks_add.add_argument("--key-password", help="Contraseña opcional si la clave privada PEM está cifrada")
+    sub_ks_add.add_argument("--expiration-days", type=int, help="Dias para la expiracion de la llave (opcional)")
+    sub_ks_add.add_argument("--description", default="", help="Descripcion opcional de la llave")
+
+    # keystore-rotate
+    sub_ks_rotate = subparsers.add_parser("keystore-rotate", help="Rotar una llave del llavero y pasar la actual al historial")
+    sub_ks_rotate.add_argument("--keystore", required=True, help="Ruta del llavero")
+    sub_ks_rotate.add_argument("--password", required=True, help="Contraseña maestra del llavero")
+    sub_ks_rotate.add_argument("--alias", required=True, help="Alias de la llave a rotar")
+    sub_ks_rotate.add_argument("--new-key-file", help="Ruta de un archivo PEM con la nueva llave (opcional, si se omite se autogenerará)")
+    sub_ks_rotate.add_argument("--key-password", help="Contraseña opcional si la nueva llave privada PEM está cifrada")
+    sub_ks_rotate.add_argument("--expiration-days", type=int, help="Dias para la expiracion de la nueva llave (opcional)")
+
+    # keystore-check-expired
+    sub_ks_expired = subparsers.add_parser("keystore-check-expired", help="Verificar el estado de expiración de las llaves en el llavero")
+    sub_ks_expired.add_argument("--keystore", required=True, help="Ruta del llavero")
+    sub_ks_expired.add_argument("--password", required=True, help="Contraseña maestra del llavero")
 
     # keystore-export-key
     sub_ks_export = subparsers.add_parser("keystore-export-key", help="Exportar una llave del llavero a un archivo PEM")
@@ -1112,13 +1128,35 @@ def main():
                     if not priv:
                         imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
                         sys.exit(1)
-                    if isinstance(priv, rsa.RSAPrivateKey):
-                        zch_e2ee.desencriptar_archivo_e2ee(temp_in.name, temp_out.name, priv)
-                    elif isinstance(priv, x25519.X25519PrivateKey):
-                        zch_e2ee.desencriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, priv)
-                    else:
-                        imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
-                        sys.exit(1)
+                    
+                    exito = False
+                    try:
+                        if isinstance(priv, rsa.RSAPrivateKey):
+                            zch_e2ee.desencriptar_archivo_e2ee(temp_in.name, temp_out.name, priv)
+                        elif isinstance(priv, x25519.X25519PrivateKey):
+                            zch_e2ee.desencriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, priv)
+                        else:
+                            imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                            sys.exit(1)
+                        exito = True
+                    except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                        if args.key_alias and args.keystore and args.keystore_password:
+                            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                            historial = ks.obtener_historial_clave_privada(args.key_alias)
+                            for priv_hist in historial:
+                                try:
+                                    if isinstance(priv_hist, rsa.RSAPrivateKey):
+                                        zch_e2ee.desencriptar_archivo_e2ee(temp_in.name, temp_out.name, priv_hist)
+                                    elif isinstance(priv_hist, x25519.X25519PrivateKey):
+                                        zch_e2ee.desencriptar_archivo_e2ee_ec(temp_in.name, temp_out.name, priv_hist)
+                                    else:
+                                        continue
+                                    exito = True
+                                    break
+                                except Exception:
+                                    continue
+                    if not exito:
+                        raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el archivo (incluso usando historial de claves).")
                     
                 with open(temp_out.name, 'rb') as f:
                     datos_descifrados = f.read()
@@ -1170,15 +1208,49 @@ def main():
         try:
             ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
             aliases = ks.listar_alias()
-            imprimir_exito("Alias del llavero recuperados.", args.json, {"aliases": aliases})
+            
+            detailed_priv = {}
+            for a, info in ks.claves_privadas.items():
+                detailed_priv[a] = {
+                    "descripcion": info.get("descripcion", ""),
+                    "fecha_expiracion": info.get("fecha_expiracion"),
+                    "historial_count": len(info.get("historial", []))
+                }
+            detailed_pub = {}
+            for a, info in ks.claves_publicas.items():
+                detailed_pub[a] = {
+                    "descripcion": info.get("descripcion", ""),
+                    "fecha_expiracion": info.get("fecha_expiracion"),
+                    "historial_count": len(info.get("historial", []))
+                }
+                
+            imprimir_exito("Alias del llavero recuperados.", args.json, {
+                "aliases": aliases,
+                "detailed_privadas": detailed_priv,
+                "detailed_publicas": detailed_pub
+            })
             if not args.json:
                 print("\n--- ALIAS EN LLAVERO ---")
                 print("Claves Privadas Propias:")
                 for a in aliases["claves_privadas"]:
-                    print(f"  - {a}")
+                    info = ks.claves_privadas[a]
+                    desc = info.get("descripcion", "")
+                    desc_str = f" - Desc: {desc}" if desc else ""
+                    exp = info.get("fecha_expiracion")
+                    exp_str = f" - Exp: {exp}" if exp else " - Exp: Nunca"
+                    hist = len(info.get("historial", []))
+                    hist_str = f" - Historial: {hist} llaves anteriores" if hist > 0 else ""
+                    print(f"  - {a}{desc_str}{exp_str}{hist_str}")
                 print("\nClaves Públicas de Contactos:")
                 for a in aliases["claves_publicas"]:
-                    print(f"  - {a}")
+                    info = ks.claves_publicas[a]
+                    desc = info.get("descripcion", "")
+                    desc_str = f" - Desc: {desc}" if desc else ""
+                    exp = info.get("fecha_expiracion")
+                    exp_str = f" - Exp: {exp}" if exp else " - Exp: Nunca"
+                    hist = len(info.get("historial", []))
+                    hist_str = f" - Historial: {hist} llaves anteriores" if hist > 0 else ""
+                    print(f"  - {a}{desc_str}{exp_str}{hist_str}")
         except Exception as e:
             imprimir_error(f"Fallo al listar llavero: {e}", args.json)
             sys.exit(1)
@@ -1194,13 +1266,13 @@ def main():
                     clave = zch_e2ee.cargar_llave_privada_ec(pem_str, args.key_password)
                 except Exception:
                     clave = zch_e2ee.cargar_llave_privada(pem_str, args.key_password)
-                ks.guardar_clave_propia(args.alias, clave)
+                ks.guardar_clave_propia(args.alias, clave, expiracion_dias=args.expiration_days, descripcion=args.description)
             else:
                 try:
                     clave = zch_e2ee.cargar_llave_publica_ec(pem_str)
                 except Exception:
                     clave = zch_e2ee.cargar_llave_publica(pem_str)
-                ks.guardar_clave_contacto(args.alias, clave)
+                ks.guardar_clave_contacto(args.alias, clave, expiracion_dias=args.expiration_days, descripcion=args.description)
                 
             ks.guardar(args.keystore, args.password)
             imprimir_exito(f"Clave guardada en llavero bajo el alias '{args.alias}'.", args.json, {"alias": args.alias})
@@ -1310,13 +1382,35 @@ def main():
                 if not priv:
                     imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
                     sys.exit(1)
-                if isinstance(priv, rsa.RSAPrivateKey):
-                    descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
-                elif isinstance(priv, x25519.X25519PrivateKey):
-                    descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
-                else:
-                    imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
-                    sys.exit(1)
+                
+                exito = False
+                try:
+                    if isinstance(priv, rsa.RSAPrivateKey):
+                        descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv)
+                    elif isinstance(priv, x25519.X25519PrivateKey):
+                        descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv)
+                    else:
+                        imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                        sys.exit(1)
+                    exito = True
+                except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                    if args.key_alias and args.keystore and args.keystore_password:
+                        ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                        historial = ks.obtener_historial_clave_privada(args.key_alias)
+                        for priv_hist in historial:
+                            try:
+                                if isinstance(priv_hist, rsa.RSAPrivateKey):
+                                    descifrado = zch_e2ee.desencriptar_e2ee(texto_cifrado, priv_hist)
+                                elif isinstance(priv_hist, x25519.X25519PrivateKey):
+                                    descifrado = zch_e2ee.desencriptar_e2ee_ec(texto_cifrado, priv_hist)
+                                else:
+                                    continue
+                                exito = True
+                                break
+                            except Exception:
+                                continue
+                if not exito:
+                    raise zch_e2ee.ErrorDescifrado("Fallo al descifrar texto (incluso usando historial de claves).")
 
             if args.json:
                 imprimir_exito("Texto descifrado.", args.json, {"plain": descifrado})
@@ -1407,6 +1501,21 @@ def main():
                 es_valido = zch_e2ee.verificar_firma_ed25519(datos.decode('utf-8', errors='ignore'), args.signature, pub)
             else:
                 es_valido = zch_e2ee.verificar_firma_archivo(args.file, args.signature, pub)
+
+            # Fallback a historial si es alias de contacto y la verificación inicial falló
+            if not es_valido and args.key_alias and args.keystore and args.keystore_password:
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                historial = ks.obtener_historial_clave_contacto(args.key_alias)
+                for pub_hist in historial:
+                    try:
+                        if "Ed25519" in type(pub_hist).__name__:
+                            es_valido = zch_e2ee.verificar_firma_ed25519(datos.decode('utf-8', errors='ignore'), args.signature, pub_hist)
+                        else:
+                            es_valido = zch_e2ee.verificar_firma_archivo(args.file, args.signature, pub_hist)
+                        if es_valido:
+                            break
+                    except Exception:
+                        continue
 
             if es_valido:
                 imprimir_exito("La firma es totalmente valida.", args.json, {"valid": True})
@@ -1522,6 +1631,70 @@ def main():
             imprimir_error(f"Fallo al restaurar respaldo de Keystore: {e}", args.json)
             sys.exit(1)
 
+    elif args.command == "keystore-rotate":
+        try:
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            nueva_clave_pem = None
+            if args.new_key_file:
+                with open(args.new_key_file, 'r', encoding='utf-8') as f:
+                    nueva_clave_pem = f.read()
+            ks.rotar_clave(args.alias, nueva_clave_pem=nueva_clave_pem, expiracion_dias=args.expiration_days)
+            ks.guardar(args.keystore, args.password)
+            imprimir_exito(f"Clave '{args.alias}' rotada con éxito.", args.json, {"alias": args.alias})
+        except Exception as e:
+            imprimir_error(f"Fallo al rotar clave: {e}", args.json)
+            sys.exit(1)
+
+    elif args.command == "keystore-check-expired":
+        try:
+            import datetime
+            ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+            ahora = datetime.datetime.now(datetime.timezone.utc)
+            reporte = []
+            
+            def verificar_categoria(claves_dict, tipo):
+                for alias, info in claves_dict.items():
+                    exp_str = info.get("fecha_expiracion")
+                    expirada = False
+                    dias_restantes = None
+                    if exp_str:
+                        clean_exp_str = exp_str
+                        if clean_exp_str.endswith('Z'):
+                            clean_exp_str = clean_exp_str[:-1] + '+00:00'
+                        try:
+                            dt_exp = datetime.datetime.fromisoformat(clean_exp_str)
+                            expirada = dt_exp < ahora
+                            dias_restantes = (dt_exp - ahora).days
+                        except Exception:
+                            pass
+                    reporte.append({
+                        "alias": alias,
+                        "tipo": tipo,
+                        "fecha_expiracion": exp_str,
+                        "expirada": expirada,
+                        "dias_restantes": dias_restantes,
+                        "descripcion": info.get("descripcion", "")
+                    })
+            
+            verificar_categoria(ks.claves_privadas, "privada")
+            verificar_categoria(ks.claves_publicas, "publica")
+            
+            if args.json:
+                imprimir_exito("Estado de expiracion verificado.", args.json, {"report": reporte})
+            else:
+                print("\n--- ESTADO DE EXPIRACIÓN DE CLAVES ---")
+                for item in reporte:
+                    status = "EXPIRADA" if item["expirada"] else "ACTIVA"
+                    exp_info = item["fecha_expiracion"] if item["fecha_expiracion"] else "Nunca"
+                    dias_str = f" ({item['dias_restantes']} dias restantes)" if item["dias_restantes"] is not None and not item["expirada"] else ""
+                    if item["expirada"]:
+                        dias_str = f" (hace {-item['dias_restantes']} dias)" if item["dias_restantes"] is not None else ""
+                    print(f"Alias: {item['alias']} ({item['tipo']}) - Estado: {status} - Expira: {exp_info}{dias_str}")
+                imprimir_exito("Verificacion de expiracion completada.")
+        except Exception as e:
+            imprimir_error(f"Fallo al verificar expiracion: {e}", args.json)
+            sys.exit(1)
+
     elif args.command == "encrypt-dir":
         try:
             if args.password:
@@ -1552,13 +1725,35 @@ def main():
                 if not priv:
                     imprimir_error("Debe especificar --password, --key-rsa, --key-ec o --key-alias para descifrar.", args.json)
                     sys.exit(1)
-                if isinstance(priv, rsa.RSAPrivateKey):
-                    zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv)
-                elif isinstance(priv, x25519.X25519PrivateKey):
-                    zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv)
-                else:
-                    imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
-                    sys.exit(1)
+                
+                exito = False
+                try:
+                    if isinstance(priv, rsa.RSAPrivateKey):
+                        zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv)
+                    elif isinstance(priv, x25519.X25519PrivateKey):
+                        zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv)
+                    else:
+                        imprimir_error("Tipo de llave privada no soportado para descifrar (debe ser RSA o X25519).", args.json)
+                        sys.exit(1)
+                    exito = True
+                except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                    if args.key_alias and args.keystore and args.keystore_password:
+                        ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                        historial = ks.obtener_historial_clave_privada(args.key_alias)
+                        for priv_hist in historial:
+                            try:
+                                if isinstance(priv_hist, rsa.RSAPrivateKey):
+                                    zch_e2ee.desencriptar_directorio_e2ee(args.in_file, args.out_dir, priv_hist)
+                                elif isinstance(priv_hist, x25519.X25519PrivateKey):
+                                    zch_e2ee.desencriptar_directorio_e2ee_ec(args.in_file, args.out_dir, priv_hist)
+                                else:
+                                    continue
+                                exito = True
+                                break
+                            except Exception:
+                                continue
+                if not exito:
+                    raise zch_e2ee.ErrorDescifrado("Fallo al descifrar directorio (incluso usando historial de claves).")
             imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar directorio: {e}", args.json)
@@ -1618,7 +1813,23 @@ def main():
                 imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
                 sys.exit(1)
                 
-            zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv)
+            exito = False
+            try:
+                zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv)
+                exito = True
+            except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
+                if args.key_alias and args.keystore and args.password:
+                    ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                    historial = ks.obtener_historial_clave_privada(args.key_alias)
+                    for priv_hist in historial:
+                        try:
+                            zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv_hist)
+                            exito = True
+                            break
+                        except Exception:
+                            continue
+            if not exito:
+                raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el directorio multi-destinatario (incluso usando historial de claves).")
             imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar directorio multi-destinatario: {e}", args.json)
