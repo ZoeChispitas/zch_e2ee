@@ -1207,6 +1207,328 @@ def desencriptar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, clave_p
         raise ErrorDescifrado(f"Fallo al descifrar archivo multi-destinatario: {e}")
 
 # =====================================================================
+# NOVEDADES V1.1.5: CIFRADO Y FIRMA MULTI-DESTINATARIO (Sign-then-Encrypt)
+# =====================================================================
+
+def _firmar_datos_generico(datos: bytes, clave_privada) -> bytes:
+    from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
+    if isinstance(clave_privada, rsa.RSAPrivateKey):
+        return clave_privada.sign(
+            datos,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+    elif isinstance(clave_privada, ed25519.Ed25519PrivateKey):
+        return clave_privada.sign(datos)
+    else:
+        raise ErrorClave("Llave privada de emisor no soportada para firma.")
+
+def _verificar_firma_datos_generico(datos: bytes, firma: bytes, clave_publica) -> bool:
+    from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
+    try:
+        if isinstance(clave_publica, rsa.RSAPublicKey):
+            clave_publica.verify(
+                firma,
+                datos,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            return True
+        elif isinstance(clave_publica, ed25519.Ed25519PublicKey):
+            clave_publica.verify(firma, datos)
+            return True
+        else:
+            return False
+    except Exception:
+        return False
+
+def encriptar_y_firmar_e2ee_multi(mensaje: str, claves_publicas: list, clave_privada_emisor) -> str:
+    """
+    Cifra un mensaje de texto para múltiples destinatarios y lo firma con la llave privada del emisor.
+    Retorna el payload final en Base64: [firma] + [paquete_cifrado].
+    """
+    try:
+        # Cifrar usando la función base multi-destinatario
+        payload_cifrado_b64 = encriptar_e2ee_multi(mensaje, claves_publicas)
+        paquete_cifrado_bytes = base64.b64decode(payload_cifrado_b64.encode('utf-8'))
+        
+        # Firmar los bytes cifrados (Encrypt-then-Sign)
+        firma = _firmar_datos_generico(paquete_cifrado_bytes, clave_privada_emisor)
+        
+        # Empaquetar
+        paquete_final = firma + paquete_cifrado_bytes
+        return base64.b64encode(paquete_final).decode('utf-8')
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise CriptoError(f"Error al cifrar y firmar multi-destinatario: {e}")
+
+def desencriptar_y_verificar_e2ee_multi(payload_b64: str, clave_privada_destinatario, clave_publica_emisor) -> tuple[str, bool]:
+    """
+    Descifra un mensaje multi-destinatario y verifica si la firma del emisor es válida.
+    Retorna una tupla: (mensaje_desencriptado, firma_es_valida).
+    """
+    try:
+        paquete_final = base64.b64decode(payload_b64.encode('utf-8'))
+        
+        # Determinar el tamaño de la firma en base a la clave del emisor
+        if isinstance(clave_publica_emisor, rsa.RSAPublicKey):
+            tamanio_firma = clave_publica_emisor.key_size // 8
+        elif isinstance(clave_publica_emisor, ed25519.Ed25519PublicKey):
+            tamanio_firma = 64
+        else:
+            raise ErrorClave("Tipo de llave pública de emisor no soportado.")
+            
+        # Extraer firma y paquete cifrado
+        firma = paquete_final[:tamanio_firma]
+        paquete_cifrado_bytes = paquete_final[tamanio_firma:]
+        
+        # Verificar firma
+        firma_valida = _verificar_firma_datos_generico(paquete_cifrado_bytes, firma, clave_publica_emisor)
+        
+        # Descifrar
+        payload_cifrado_b64 = base64.b64encode(paquete_cifrado_bytes).decode('utf-8')
+        mensaje = desencriptar_e2ee_multi(payload_cifrado_b64, clave_privada_destinatario)
+        
+        return mensaje, firma_valida
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise ErrorDescifrado(f"Fallo al desencriptar y verificar mensaje multi-destinatario: {e}")
+
+def encriptar_y_firmar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, claves_publicas: list, clave_privada_emisor):
+    """
+    Encripta un archivo completo para múltiples destinatarios y firma el contenido.
+    Escribe el archivo resultante con cabecera ZCH v2 (Modo 0x08 al 0x0B).
+    """
+    try:
+        if not claves_publicas:
+            raise ErrorClave("Se requiere al menos una clave pública para encriptar.")
+            
+        with open(ruta_origen, 'rb') as f:
+            datos = f.read()
+            
+        # Comprimir
+        datos_comprimidos = zlib.compress(datos)
+        
+        # Generar clave AES y cifrar
+        clave_aes = AESGCM.generate_key(bit_length=256)
+        aesgcm = AESGCM(clave_aes)
+        nonce = os.urandom(12)
+        datos_cifrados = aesgcm.encrypt(nonce, datos_comprimidos, None)
+        
+        primera_clave = claves_publicas[0]
+        es_ec_dest = isinstance(primera_clave, x25519.X25519PublicKey)
+        
+        bloque_claves = bytearray()
+        bloque_claves.extend(len(claves_publicas).to_bytes(2, byteorder='big'))
+        
+        tipo_clave = 0x02 if es_ec_dest else 0x01
+        bloque_claves.append(tipo_clave)
+        
+        for pub_key in claves_publicas:
+            huella = _obtener_huella_publica(pub_key)
+            bloque_claves.extend(huella)
+            
+            if es_ec_dest:
+                priv_efimera = x25519.X25519PrivateKey.generate()
+                pub_efimera = priv_efimera.public_key()
+                secreto = derivar_clave_compartida(priv_efimera, pub_key)
+                
+                nonce_ec = os.urandom(12)
+                aesgcm_ec = AESGCM(secreto)
+                clave_aes_encriptada = aesgcm_ec.encrypt(nonce_ec, clave_aes, None)
+                
+                pub_efimera_bytes = pub_efimera.public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw
+                )
+                
+                bloque_destinatario = pub_efimera_bytes + nonce_ec + clave_aes_encriptada
+                bloque_claves.extend(len(bloque_destinatario).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(bloque_destinatario)
+            else:
+                clave_aes_encriptada = pub_key.encrypt(
+                    clave_aes,
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+                bloque_claves.extend(len(clave_aes_encriptada).to_bytes(2, byteorder='big'))
+                bloque_claves.extend(clave_aes_encriptada)
+                
+        paquete_cifrado = bytes(bloque_claves) + nonce + datos_cifrados
+        
+        # Firmar paquete
+        firma = _firmar_datos_generico(paquete_cifrado, clave_privada_emisor)
+        
+        # Determinar el modo de la cabecera
+        # 0x08: RSA dest, RSA sign
+        # 0x09: EC dest, EC sign
+        # 0x0A: RSA dest, EC sign
+        # 0x0B: EC dest, RSA sign
+        es_ec_sign = isinstance(clave_privada_emisor, ed25519.Ed25519PrivateKey)
+        
+        if not es_ec_dest and not es_ec_sign:
+            modo = b"\x08"
+        elif es_ec_dest and es_ec_sign:
+            modo = b"\x09"
+        elif not es_ec_dest and es_ec_sign:
+            modo = b"\x0a"
+        else:
+            modo = b"\x0b"
+            
+        cabecera = b"ZCH\x02" + modo
+        
+        with open(ruta_destino, 'wb') as f:
+            f.write(cabecera + firma + paquete_cifrado)
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise CriptoError(f"Error al encriptar y firmar archivo multi-destinatario: {e}")
+
+def desencriptar_y_verificar_archivo_e2ee_multi(ruta_origen: str, ruta_destino: str, clave_privada_destinatario, clave_publica_emisor) -> bool:
+    """
+    Descifra un archivo multi-destinatario firmado, valida la firma del emisor,
+    y escribe el archivo original en la ruta de destino.
+    Retorna True si la firma es válida, False en caso contrario.
+    """
+    try:
+        with open(ruta_origen, 'rb') as f:
+            paquete_final = f.read()
+            
+        if not paquete_final.startswith(b"ZCH\x02"):
+            raise ErrorDescifrado("El archivo no contiene la cabecera válida ZCH v2.")
+            
+        modo = paquete_final[4]
+        if modo not in (0x08, 0x09, 0x0a, 0x0b):
+            raise ErrorClave(f"Modo de cifrado firmado inesperado en archivo: {modo}")
+            
+        # Determinar tamaño de firma
+        if isinstance(clave_publica_emisor, rsa.RSAPublicKey):
+            tamanio_firma = clave_publica_emisor.key_size // 8
+        elif isinstance(clave_publica_emisor, ed25519.Ed25519PublicKey):
+            tamanio_firma = 64
+        else:
+            raise ErrorClave("Tipo de llave pública de emisor no soportado.")
+            
+        firma = paquete_final[5 : 5 + tamanio_firma]
+        paquete_cifrado = paquete_final[5 + tamanio_firma:]
+        
+        # Verificar firma
+        firma_valida = _verificar_firma_datos_generico(paquete_cifrado, firma, clave_publica_emisor)
+        
+        # Proceder a descifrar el paquete_cifrado
+        num_dest = int.from_bytes(paquete_cifrado[:2], byteorder='big')
+        tipo_clave = paquete_cifrado[2]
+        
+        clave_publica_propia = clave_privada_destinatario.public_key()
+        huella_propia = _obtener_huella_publica(clave_publica_propia)
+        
+        offset = 3
+        clave_aes = None
+        
+        for _ in range(num_dest):
+            huella_recip = paquete_cifrado[offset : offset + 8]
+            offset += 8
+            
+            tamanio_bloque = int.from_bytes(paquete_cifrado[offset : offset + 2], byteorder='big')
+            offset += 2
+            
+            bloque_datos = paquete_cifrado[offset : offset + tamanio_bloque]
+            offset += tamanio_bloque
+            
+            if huella_recip == huella_propia:
+                if tipo_clave == 0x02:
+                    pub_efimera_bytes = bloque_datos[:32]
+                    nonce_ec = bloque_datos[32 : 32 + 12]
+                    clave_aes_encriptada = bloque_datos[32 + 12:]
+                    
+                    pub_efimera = x25519.X25519PublicKey.from_public_bytes(pub_efimera_bytes)
+                    secreto = derivar_clave_compartida(clave_privada_destinatario, pub_efimera)
+                    
+                    aesgcm_ec = AESGCM(secreto)
+                    clave_aes = aesgcm_ec.decrypt(nonce_ec, clave_aes_encriptada, None)
+                else:
+                    clave_aes = clave_privada_destinatario.decrypt(
+                        bloque_datos,
+                        padding.OAEP(
+                            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                            algorithm=hashes.SHA256(),
+                            label=None
+                        )
+                    )
+        
+        if clave_aes is None:
+            raise ErrorDescifrado("La clave privada proporcionada no pertenece a ningún destinatario de este archivo.")
+            
+        nonce = paquete_cifrado[offset : offset + 12]
+        datos_cifrados = paquete_cifrado[offset + 12:]
+        
+        aesgcm = AESGCM(clave_aes)
+        datos_comprimidos = aesgcm.decrypt(nonce, datos_cifrados, None)
+        datos_originales = zlib.decompress(datos_comprimidos)
+        
+        with open(ruta_destino, 'wb') as f:
+            f.write(datos_originales)
+            
+        return firma_valida
+    except Exception as e:
+        if isinstance(e, CriptoError):
+            raise
+        raise ErrorDescifrado(f"Fallo al descifrar y verificar archivo: {e}")
+
+def encriptar_y_firmar_directorio_e2ee_multi(ruta_directorio: str, ruta_destino: str, claves_publicas: list, clave_privada_emisor):
+    """
+    Comprime un directorio completo en un archivo temporal ZIP y luego lo cifra y firma
+    para múltiples destinatarios usando sus llaves públicas y la llave privada del emisor.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(ruta_temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for raiz, _, archivos in os.walk(ruta_directorio):
+                for archivo in archivos:
+                    ruta_completa = os.path.join(raiz, archivo)
+                    ruta_relativa = os.path.relpath(ruta_completa, ruta_directorio)
+                    zipf.write(ruta_completa, arcname=ruta_relativa)
+                    
+        encriptar_y_firmar_archivo_e2ee_multi(ruta_temp_zip, ruta_destino, claves_publicas, clave_privada_emisor)
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
+
+def desencriptar_y_verificar_directorio_e2ee_multi(ruta_origen: str, ruta_directorio_destino: str, clave_privada_destinatario, clave_publica_emisor) -> bool:
+    """
+    Descifra un paquete cifrado y firmado de directorio, valida la firma,
+    y extrae los archivos en el directorio de destino.
+    Retorna True si la firma es válida, False en caso contrario.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    ruta_temp_zip = temp_zip.name
+    temp_zip.close()
+    
+    try:
+        firma_valida = desencriptar_y_verificar_archivo_e2ee_multi(ruta_origen, ruta_temp_zip, clave_privada_destinatario, clave_publica_emisor)
+        os.makedirs(ruta_directorio_destino, exist_ok=True)
+        with zipfile.ZipFile(ruta_temp_zip, 'r') as zipf:
+            zipf.extractall(ruta_directorio_destino)
+        return firma_valida
+    finally:
+        if os.path.exists(ruta_temp_zip):
+            os.remove(ruta_temp_zip)
+
+# =====================================================================
 # APARTADO CONTRASEÑA TRADICIONAL (SIMÉTRICA - KDF CONFIGURABLE + AES-GCM + KVV)
 # =====================================================================
 

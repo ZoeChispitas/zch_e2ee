@@ -62,6 +62,12 @@ from .zch_e2ee import (
     desencriptar_archivo_e2ee_multi,
     encriptar_directorio_e2ee_multi,
     desencriptar_directorio_e2ee_multi,
+    encriptar_y_firmar_e2ee_multi,
+    desencriptar_y_verificar_e2ee_multi,
+    encriptar_y_firmar_archivo_e2ee_multi,
+    desencriptar_y_verificar_archivo_e2ee_multi,
+    encriptar_y_firmar_directorio_e2ee_multi,
+    desencriptar_y_verificar_directorio_e2ee_multi,
     
     # Password (Simétrico)
     encriptar_con_password,

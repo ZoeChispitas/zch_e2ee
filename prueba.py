@@ -2111,9 +2111,288 @@ def test_nuevas_caracteristicas_v114():
                 
     print("  [OK] Pruebas de nuevas caracteristicas v1.1.4 completadas con exito.")
 
+def test_nuevas_caracteristicas_v115():
+    print("\n--- TEST: Nuevas Caracteristicas v1.1.5 (Cifrado y Firma Multi-destinatario) ---")
+    
+    # 1. Preparar llaves de prueba
+    # Destinatarios
+    priv_rsa_dest1, pub_rsa_dest1 = zch_e2ee.generar_llaves()
+    priv_rsa_dest2, pub_rsa_dest2 = zch_e2ee.generar_llaves()
+    priv_ec_dest1, pub_ec_dest1 = zch_e2ee.generar_llaves_ec()
+    priv_ec_dest2, pub_ec_dest2 = zch_e2ee.generar_llaves_ec()
+    
+    # Emisores (para firmar)
+    priv_rsa_emisor, pub_rsa_emisor = zch_e2ee.generar_llaves()
+    priv_ed_emisor, pub_ed_emisor = zch_e2ee.generar_llaves_ed25519()
+    
+    mensaje = "Este es un mensaje secreto y firmado de prueba para v1.1.5."
+    
+    # --- PRUEBAS PROGRAMÁTICAS ---
+    
+    # A. Texto: RSA dest, RSA emisor
+    cifrado_rsa_rsa = zch_e2ee.encriptar_y_firmar_e2ee_multi(mensaje, [pub_rsa_dest1, pub_rsa_dest2], priv_rsa_emisor)
+    # Descifrar y verificar
+    dec_rsa_rsa1, firma_valida1 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_rsa_rsa, priv_rsa_dest1, pub_rsa_emisor)
+    dec_rsa_rsa2, firma_valida2 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_rsa_rsa, priv_rsa_dest2, pub_rsa_emisor)
+    assert dec_rsa_rsa1 == mensaje and firma_valida1
+    assert dec_rsa_rsa2 == mensaje and firma_valida2
+    
+    # B. Texto: X25519 dest, Ed25519 emisor
+    cifrado_ec_ed = zch_e2ee.encriptar_y_firmar_e2ee_multi(mensaje, [pub_ec_dest1, pub_ec_dest2], priv_ed_emisor)
+    dec_ec_ed1, firma_valida3 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_ec_ed, priv_ec_dest1, pub_ed_emisor)
+    dec_ec_ed2, firma_valida4 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_ec_ed, priv_ec_dest2, pub_ed_emisor)
+    assert dec_ec_ed1 == mensaje and firma_valida3
+    assert dec_ec_ed2 == mensaje and firma_valida4
+    
+    # C. Texto: RSA dest, Ed25519 emisor
+    cifrado_rsa_ed = zch_e2ee.encriptar_y_firmar_e2ee_multi(mensaje, [pub_rsa_dest1], priv_ed_emisor)
+    dec_rsa_ed, firma_valida5 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_rsa_ed, priv_rsa_dest1, pub_ed_emisor)
+    assert dec_rsa_ed == mensaje and firma_valida5
+
+    # D. Texto: X25519 dest, RSA emisor
+    cifrado_ec_rsa = zch_e2ee.encriptar_y_firmar_e2ee_multi(mensaje, [pub_ec_dest1], priv_rsa_emisor)
+    dec_ec_rsa, firma_valida6 = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_ec_rsa, priv_ec_dest1, pub_rsa_emisor)
+    assert dec_ec_rsa == mensaje and firma_valida6
+
+    # E. Prueba de alteración (firma inválida)
+    cifrado_alterado_bytes = bytearray(base64.b64decode(cifrado_rsa_rsa.encode('utf-8')))
+    cifrado_alterado_bytes[20] ^= 0xFF
+    cifrado_alterado = base64.b64encode(cifrado_alterado_bytes).decode('utf-8')
+    try:
+        dec_alt, firma_alt = zch_e2ee.desencriptar_y_verificar_e2ee_multi(cifrado_alterado, priv_rsa_dest1, pub_rsa_emisor)
+        assert not firma_alt, "La firma debio ser detectada como invalida tras alteracion."
+    except Exception:
+        pass
+
+    print("    [OK] Pruebas programaticas de texto cifrado y firmado pasaron.")
+
+    # F. Archivo: X25519 dest, Ed25519 emisor
+    temp_file = "temp_v115_file.txt"
+    temp_enc = "temp_v115_file.enc"
+    temp_dec1 = "temp_v115_file_dec1.txt"
+    temp_dec2 = "temp_v115_file_dec2.txt"
+    
+    with open(temp_file, "w", encoding="utf-8") as f:
+        f.write(mensaje)
+        
+    try:
+        zch_e2ee.encriptar_y_firmar_archivo_e2ee_multi(temp_file, temp_enc, [pub_ec_dest1, pub_ec_dest2], priv_ed_emisor)
+        
+        with open(temp_enc, "rb") as f:
+            header = f.read(5)
+            assert header == b"ZCH\x02\x09", f"Cabecera inesperada: {header}"
+            
+        v1 = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(temp_enc, temp_dec1, priv_ec_dest1, pub_ed_emisor)
+        v2 = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(temp_enc, temp_dec2, priv_ec_dest2, pub_ed_emisor)
+        assert v1 and v2, "Las firmas de archivo debieron ser validas."
+        
+        with open(temp_dec1, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+        with open(temp_dec2, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        # G. Alterar archivo y verificar rechazo
+        with open(temp_enc, "r+b") as f:
+            f.seek(15)
+            original_byte = f.read(1)
+            f.seek(15)
+            f.write(bytes([original_byte[0] ^ 0xFF]))
+            
+        try:
+            v_alt = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(temp_enc, temp_dec1, priv_ec_dest1, pub_ed_emisor)
+            assert not v_alt, "La firma debio ser invalida tras alterar archivo."
+        except Exception:
+            pass
+            
+        print("    [OK] Pruebas programaticas de archivo cifrado y firmado pasaron.")
+    finally:
+        for f in [temp_file, temp_enc, temp_dec1, temp_dec2]:
+            if os.path.exists(f):
+                os.remove(f)
+
+    # H. Directorio: RSA dest, Ed25519 emisor
+    temp_dir = "temp_v115_dir"
+    temp_dir_out1 = "temp_v115_dir_out1"
+    temp_dir_out2 = "temp_v115_dir_out2"
+    temp_dir_enc = "temp_v115_dir.enc"
+    
+    os.makedirs(temp_dir, exist_ok=True)
+    with open(os.path.join(temp_dir, "archivo_dir.txt"), "w", encoding="utf-8") as f:
+        f.write(mensaje)
+        
+    try:
+        zch_e2ee.encriptar_y_firmar_directorio_e2ee_multi(temp_dir, temp_dir_enc, [pub_rsa_dest1, pub_rsa_dest2], priv_ed_emisor)
+        
+        with open(temp_dir_enc, "rb") as f:
+            header = f.read(5)
+            assert header == b"ZCH\x02\x0a", f"Cabecera inesperada: {header}"
+            
+        v1 = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(temp_dir_enc, temp_dir_out1, priv_rsa_dest1, pub_ed_emisor)
+        v2 = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(temp_dir_enc, temp_dir_out2, priv_rsa_dest2, pub_ed_emisor)
+        assert v1 and v2, "Las firmas de directorio debieron ser validas."
+        
+        with open(os.path.join(temp_dir_out1, "archivo_dir.txt"), "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+        with open(os.path.join(temp_dir_out2, "archivo_dir.txt"), "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        print("    [OK] Pruebas programaticas de directorio cifrado y firmado pasaron.")
+    finally:
+        for d in [temp_dir, temp_dir_out1, temp_dir_out2]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+        if os.path.exists(temp_dir_enc):
+            os.remove(temp_dir_enc)
+
+    # --- PRUEBAS CLI ---
+    temp_pub_rsa = "temp_v115_pub_rsa.pem"
+    temp_priv_rsa = "temp_v115_priv_rsa.pem"
+    temp_pub_ed = "temp_v115_pub_ed.pem"
+    temp_priv_ed = "temp_v115_priv_ed.pem"
+    
+    zch_e2ee.guardar_llave_publica_en_archivo(pub_rsa_dest1, temp_pub_rsa)
+    zch_e2ee.guardar_llave_privada_en_archivo(priv_rsa_dest1, temp_priv_rsa)
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_ed_emisor, temp_pub_ed)
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_ed_emisor, temp_priv_ed)
+    
+    env_dict = os.environ.copy()
+    env_dict["PYTHONPATH"] = os.path.abspath("src")
+    
+    ruta_ks = "temp_v115_ks.json"
+    pwd_ks = "KeystorePasswordV115!"
+    
+    temp_plain_file = "temp_v115_cli_plain.txt"
+    temp_enc_file = "temp_v115_cli_enc.enc"
+    temp_dec_file = "temp_v115_cli_dec.txt"
+    
+    with open(temp_plain_file, "w", encoding="utf-8") as f:
+        f.write(mensaje)
+        
+    try:
+        ks = zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd_ks)
+        ks.guardar_clave_propia("dest_rsa", priv_rsa_dest1)
+        ks.guardar_clave_contacto("dest_rsa_pub", pub_rsa_dest1)
+        ks.guardar_clave_contacto("emisor_ed", pub_ed_emisor)
+        ks.guardar_clave_propia("emisor_ed_priv", priv_ed_emisor)
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        # 1. CLI: encrypt-text-multi & decrypt-text-multi con archivos PEM directos
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text-multi",
+            "--text", mensaje,
+            "--keys-public", temp_pub_rsa,
+            "--sign-private", temp_priv_ed
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cipher_text = json.loads(res.stdout)["cipher"]
+        
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text-multi",
+            "--text", cipher_text,
+            "--key-private", temp_priv_rsa,
+            "--verify-public", temp_pub_ed
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["plain"] == mensaje
+        
+        # 2. CLI: encrypt-text-multi & decrypt-text-multi con Keystore
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-text-multi",
+            "--text", mensaje,
+            "--keys-aliases", "dest_rsa_pub",
+            "--sign-alias", "emisor_ed_priv",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cipher_text_ks = json.loads(res.stdout)["cipher"]
+        
+        res = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-text-multi",
+            "--text", cipher_text_ks,
+            "--key-alias", "dest_rsa",
+            "--verify-alias", "emisor_ed",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res.stdout)["plain"] == mensaje
+        
+        # 3. CLI: encrypt-multi & decrypt-multi (archivos) con firmas
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-multi",
+            "--in-file", temp_plain_file,
+            "--out-file", temp_enc_file,
+            "--keys-public", temp_pub_rsa,
+            "--sign-private", temp_priv_ed
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-multi",
+            "--in-file", temp_enc_file,
+            "--out-file", temp_dec_file,
+            "--key-private", temp_priv_rsa,
+            "--verify-public", temp_pub_ed
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        with open(temp_dec_file, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        # 4. CLI: Rechazo de firma alterada
+        with open(temp_enc_file, "r+b") as f:
+            f.seek(10)
+            orig_b = f.read(1)
+            f.seek(10)
+            f.write(bytes([orig_b[0] ^ 0x01]))
+            
+        res_alt = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-multi",
+            "--in-file", temp_enc_file,
+            "--out-file", temp_dec_file,
+            "--key-private", temp_priv_rsa,
+            "--verify-public", temp_pub_ed
+        ], env=env_dict, capture_output=True, text=True)
+        assert res_alt.returncode != 0
+        assert "La firma digital" in res_alt.stderr or "Fallo al descifrar" in res_alt.stderr or "error" in res_alt.stdout
+        
+        # 5. CLI: Fallback con historial en descifrado firmado
+        with open(temp_plain_file, "w", encoding="utf-8") as f:
+            f.write(mensaje)
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "encrypt-multi",
+            "--in-file", temp_plain_file,
+            "--out-file", temp_enc_file,
+            "--keys-aliases", "dest_rsa_pub",
+            "--sign-alias", "emisor_ed_priv",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        ks.rotar_clave("dest_rsa")
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        if os.path.exists(temp_dec_file):
+            os.remove(temp_dec_file)
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "decrypt-multi",
+            "--in-file", temp_enc_file,
+            "--out-file", temp_dec_file,
+            "--key-alias", "dest_rsa",
+            "--verify-alias", "emisor_ed",
+            "--keystore", ruta_ks,
+            "--password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        with open(temp_dec_file, "r", encoding="utf-8") as f:
+            assert f.read() == mensaje
+            
+        print("    [OK] Pruebas de CLI de texto, archivos, firmas y fallbacks pasaron.")
+    finally:
+        for f in [temp_pub_rsa, temp_priv_rsa, temp_pub_ed, temp_priv_ed, ruta_ks, temp_plain_file, temp_enc_file, temp_dec_file]:
+            if os.path.exists(f):
+                os.remove(f)
+
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.5 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.4")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.5")
     print("=" * 75)
     
     try:
@@ -2181,7 +2460,10 @@ def main():
         # Tests v1.1.4
         test_nuevas_caracteristicas_v114()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.4 PASARON EXITOSAMENTE!")
+        # Tests v1.1.5
+        test_nuevas_caracteristicas_v115()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.5 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

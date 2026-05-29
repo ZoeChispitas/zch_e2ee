@@ -80,7 +80,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.4)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.5)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -661,9 +661,9 @@ def menu_interactivo():
                     elif sub_opt == "3":
                         break
                     else:
-                        imprimir_error("Acción inválida.")
+                        print("Opción inválida.")
             except Exception as e:
-                imprimir_error(f"Error en la simulación: {e}")
+                imprimir_error(f"Fallo en simulación Double Ratchet: {e}")
 
         elif opcion == "16":
             print("\n--- Cifrar Archivo Multi-destinatario ---")
@@ -707,8 +707,36 @@ def menu_interactivo():
                     imprimir_error("No se ingresaron llaves públicas válidas.")
                     continue
                     
-                zch_e2ee.encriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas)
-                imprimir_exito("Archivo cifrado para múltiples destinatarios con éxito.")
+                # Preguntar por firma
+                firmar = input("¿Deseas firmar digitalmente el archivo cifrado? (s/n): ").strip().lower() == "s"
+                priv_sign = None
+                if firmar:
+                    print("  k. Usar una clave del Keystore para firmar")
+                    print("  p. Usar un archivo PEM para firmar")
+                    modo_firma = input("Selecciona opción (k/p): ").strip().lower()
+                    if modo_firma == "k":
+                        ruta_ks_f = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_f = input("Contraseña del Keystore: ").strip()
+                        ks_f = zch_e2ee.KeystoreZCH.cargar(ruta_ks_f, pwd_ks_f)
+                        alias_f = input("Alias de tu llave privada: ").strip()
+                        priv_sign = ks_f.obtener_clave_privada(alias_f)
+                    elif modo_firma == "p":
+                        ruta_priv_f = input("Ruta a clave privada PEM: ").strip()
+                        pwd_priv_f = input("Contraseña de la clave PEM (Enter si no tiene): ").strip() or None
+                        try:
+                            priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv_f, pwd_priv_f)
+                        except Exception:
+                            priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv_f, pwd_priv_f)
+                    else:
+                        imprimir_error("Opción de firma inválida.")
+                        continue
+                
+                if priv_sign:
+                    zch_e2ee.encriptar_y_firmar_archivo_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas, priv_sign)
+                    imprimir_exito("Archivo cifrado y firmado para múltiples destinatarios con éxito.")
+                else:
+                    zch_e2ee.encriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas)
+                    imprimir_exito("Archivo cifrado para múltiples destinatarios con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al cifrar archivo: {e}")
                 
@@ -751,9 +779,44 @@ def menu_interactivo():
                     imprimir_error("No se pudo cargar la llave privada.")
                     continue
                     
-                exito = False
+                # Detectar si está firmado leyendo los primeros 5 bytes
+                is_signed = False
                 try:
-                    zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv)
+                    with open(ruta_orig, 'rb') as f:
+                        header_bytes = f.read(5)
+                    is_signed = len(header_bytes) == 5 and header_bytes.startswith(b"ZCH\x02") and header_bytes[4] in (0x08, 0x09, 0x0a, 0x0b)
+                except Exception:
+                    pass
+
+                pub_verify = None
+                if is_signed:
+                    print("\n[INFO] El archivo cifrado contiene firma digital del emisor.")
+                    print("  k. Cargar llave pública del emisor desde Keystore")
+                    print("  p. Cargar llave pública del emisor desde archivo PEM")
+                    modo_v = input("Selecciona opción para verificar (k/p): ").strip().lower()
+                    if modo_v == "k":
+                        ruta_ks_v = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_v = input("Contraseña del Keystore: ").strip()
+                        ks_v = zch_e2ee.KeystoreZCH.cargar(ruta_ks_v, pwd_ks_v)
+                        alias_v = input("Alias de contacto del emisor: ").strip()
+                        pub_verify = ks_v.obtener_clave_contacto(alias_v)
+                    elif modo_v == "p":
+                        ruta_pub_v = input("Ruta a llave pública PEM del emisor: ").strip()
+                        try:
+                            pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(ruta_pub_v)
+                        except Exception:
+                            pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(ruta_pub_v)
+                    else:
+                        imprimir_error("Opción de verificación inválida.")
+                        continue
+
+                exito = False
+                firma_valida = True
+                try:
+                    if is_signed:
+                        firma_valida = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv, pub_verify)
+                    else:
+                        zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv)
                     exito = True
                 except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                     if key_alias and ruta_ks and pwd_ks:
@@ -761,17 +824,27 @@ def menu_interactivo():
                         historial = ks.obtener_historial_clave_privada(key_alias)
                         for priv_hist in historial:
                             try:
-                                zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
+                                if is_signed:
+                                    firma_valida = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv_hist, pub_verify)
+                                else:
+                                    zch_e2ee.desencriptar_archivo_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
                                 exito = True
                                 break
                             except Exception:
                                 continue
                 if not exito:
                     raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el archivo multi-destinatario (incluso usando historial de claves).")
-                imprimir_exito("Archivo descifrado con éxito.")
+                
+                if is_signed:
+                    if firma_valida:
+                        imprimir_exito("Archivo descifrado y firma digital del emisor VERIFICADA correctamente.")
+                    else:
+                        imprimir_error("Archivo descifrado, pero ¡ALERTA! La firma digital del emisor es INVÁLIDA.")
+                else:
+                    imprimir_exito("Archivo descifrado con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al descifrar archivo: {e}")
-
+ 
         elif opcion == "18":
             print("\n--- Cifrar Texto Multi-destinatario ---")
             texto = input("Ingresa el texto a cifrar: ")
@@ -810,13 +883,40 @@ def menu_interactivo():
                     imprimir_error("No se ingresaron llaves públicas válidas.")
                     continue
                     
-                cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
+                # Preguntar por firma
+                firmar = input("¿Deseas firmar digitalmente el texto cifrado? (s/n): ").strip().lower() == "s"
+                priv_sign = None
+                if firmar:
+                    print("  k. Usar una clave del Keystore para firmar")
+                    print("  p. Usar un archivo PEM para firmar")
+                    modo_firma = input("Selecciona opción (k/p): ").strip().lower()
+                    if modo_firma == "k":
+                        ruta_ks_f = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_f = input("Contraseña del Keystore: ").strip()
+                        ks_f = zch_e2ee.KeystoreZCH.cargar(ruta_ks_f, pwd_ks_f)
+                        alias_f = input("Alias de tu llave privada: ").strip()
+                        priv_sign = ks_f.obtener_clave_privada(alias_f)
+                    elif modo_firma == "p":
+                        ruta_priv_f = input("Ruta a clave privada PEM: ").strip()
+                        pwd_priv_f = input("Contraseña de la clave PEM (Enter si no tiene): ").strip() or None
+                        try:
+                            priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv_f, pwd_priv_f)
+                        except Exception:
+                            priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv_f, pwd_priv_f)
+                    else:
+                        imprimir_error("Opción de firma inválida.")
+                        continue
+
+                if priv_sign:
+                    cifrado = zch_e2ee.encriptar_y_firmar_e2ee_multi(texto, llaves_publicas, priv_sign)
+                else:
+                    cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
                 print("\nTexto cifrado en Base64:")
                 print(cifrado)
                 imprimir_exito("Texto cifrado con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al cifrar texto: {e}")
-
+ 
         elif opcion == "19":
             print("\n--- Descifrar Texto Multi-destinatario ---")
             texto_cifrado = input("Ingresa el texto cifrado (Base64): ").strip()
@@ -852,10 +952,37 @@ def menu_interactivo():
                     imprimir_error("No se pudo cargar la llave privada.")
                     continue
                     
+                # Preguntar si contiene firma digital
+                con_firma = input("¿El texto cifrado contiene firma digital? (s/n): ").strip().lower() == "s"
+                pub_verify = None
+                if con_firma:
+                    print("  k. Cargar llave pública del emisor desde Keystore")
+                    print("  p. Cargar llave pública del emisor desde archivo PEM")
+                    modo_v = input("Selecciona opción para verificar (k/p): ").strip().lower()
+                    if modo_v == "k":
+                        ruta_ks_v = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_v = input("Contraseña del Keystore: ").strip()
+                        ks_v = zch_e2ee.KeystoreZCH.cargar(ruta_ks_v, pwd_ks_v)
+                        alias_v = input("Alias de contacto del emisor: ").strip()
+                        pub_verify = ks_v.obtener_clave_contacto(alias_v)
+                    elif modo_v == "p":
+                        ruta_pub_v = input("Ruta a llave pública PEM del emisor: ").strip()
+                        try:
+                            pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(ruta_pub_v)
+                        except Exception:
+                            pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(ruta_pub_v)
+                    else:
+                        imprimir_error("Opción de verificación inválida.")
+                        continue
+
                 exito = False
                 descifrado = None
+                firma_valida = True
                 try:
-                    descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
+                    if con_firma:
+                        descifrado, firma_valida = zch_e2ee.desencriptar_y_verificar_e2ee_multi(texto_cifrado, priv, pub_verify)
+                    else:
+                        descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
                     exito = True
                 except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                     if key_alias and ruta_ks and pwd_ks:
@@ -863,7 +990,10 @@ def menu_interactivo():
                         historial = ks.obtener_historial_clave_privada(key_alias)
                         for priv_hist in historial:
                             try:
-                                descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
+                                if con_firma:
+                                    descifrado, firma_valida = zch_e2ee.desencriptar_y_verificar_e2ee_multi(texto_cifrado, priv_hist, pub_verify)
+                                else:
+                                    descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
                                 exito = True
                                 break
                             except Exception:
@@ -872,10 +1002,16 @@ def menu_interactivo():
                     raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el texto (incluso usando historial de claves).")
                 print("\nTexto descifrado:")
                 print(descifrado)
-                imprimir_exito("Texto descifrado con éxito.")
+                if con_firma:
+                    if firma_valida:
+                        imprimir_exito("Texto descifrado y firma digital del emisor VERIFICADA correctamente.")
+                    else:
+                        imprimir_error("Texto descifrado, pero ¡ALERTA! La firma digital del emisor es INVÁLIDA.")
+                else:
+                    imprimir_exito("Texto descifrado con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al descifrar texto: {e}")
-
+ 
         elif opcion == "20":
             print("\n--- Cifrar Directorio Multi-destinatario ---")
             ruta_orig = input("Ruta del directorio origen: ").strip()
@@ -918,8 +1054,36 @@ def menu_interactivo():
                     imprimir_error("No se ingresaron llaves públicas válidas.")
                     continue
                     
-                zch_e2ee.encriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas)
-                imprimir_exito("Directorio cifrado para múltiples destinatarios con éxito.")
+                # Preguntar por firma
+                firmar = input("¿Deseas firmar digitalmente el directorio cifrado? (s/n): ").strip().lower() == "s"
+                priv_sign = None
+                if firmar:
+                    print("  k. Usar una clave del Keystore para firmar")
+                    print("  p. Usar un archivo PEM para firmar")
+                    modo_firma = input("Selecciona opción (k/p): ").strip().lower()
+                    if modo_firma == "k":
+                        ruta_ks_f = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_f = input("Contraseña del Keystore: ").strip()
+                        ks_f = zch_e2ee.KeystoreZCH.cargar(ruta_ks_f, pwd_ks_f)
+                        alias_f = input("Alias de tu llave privada: ").strip()
+                        priv_sign = ks_f.obtener_clave_privada(alias_f)
+                    elif modo_firma == "p":
+                        ruta_priv_f = input("Ruta a clave privada PEM: ").strip()
+                        pwd_priv_f = input("Contraseña de la clave PEM (Enter si no tiene): ").strip() or None
+                        try:
+                            priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(ruta_priv_f, pwd_priv_f)
+                        except Exception:
+                            priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(ruta_priv_f, pwd_priv_f)
+                    else:
+                        imprimir_error("Opción de firma inválida.")
+                        continue
+
+                if priv_sign:
+                    zch_e2ee.encriptar_y_firmar_directorio_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas, priv_sign)
+                    imprimir_exito("Directorio cifrado y firmado para múltiples destinatarios con éxito.")
+                else:
+                    zch_e2ee.encriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, llaves_publicas)
+                    imprimir_exito("Directorio cifrado para múltiples destinatarios con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al cifrar directorio multi-destinatario: {e}")
                 
@@ -961,9 +1125,44 @@ def menu_interactivo():
                     imprimir_error("No se pudo cargar la llave privada.")
                     continue
                     
-                exito = False
+                # Detectar si está firmado leyendo los primeros 5 bytes
+                is_signed = False
                 try:
-                    zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv)
+                    with open(ruta_orig, 'rb') as f:
+                        header_bytes = f.read(5)
+                    is_signed = len(header_bytes) == 5 and header_bytes.startswith(b"ZCH\x02") and header_bytes[4] in (0x08, 0x09, 0x0a, 0x0b)
+                except Exception:
+                    pass
+
+                pub_verify = None
+                if is_signed:
+                    print("\n[INFO] El directorio cifrado contiene firma digital del emisor.")
+                    print("  k. Cargar llave pública del emisor desde Keystore")
+                    print("  p. Cargar llave pública del emisor desde archivo PEM")
+                    modo_v = input("Selecciona opción para verificar (k/p): ").strip().lower()
+                    if modo_v == "k":
+                        ruta_ks_v = input("Ruta del Keystore (.json): ").strip()
+                        pwd_ks_v = input("Contraseña del Keystore: ").strip()
+                        ks_v = zch_e2ee.KeystoreZCH.cargar(ruta_ks_v, pwd_ks_v)
+                        alias_v = input("Alias de contacto del emisor: ").strip()
+                        pub_verify = ks_v.obtener_clave_contacto(alias_v)
+                    elif modo_v == "p":
+                        ruta_pub_v = input("Ruta a llave pública PEM del emisor: ").strip()
+                        try:
+                            pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(ruta_pub_v)
+                        except Exception:
+                            pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(ruta_pub_v)
+                    else:
+                        imprimir_error("Opción de verificación inválida.")
+                        continue
+
+                exito = False
+                firma_valida = True
+                try:
+                    if is_signed:
+                        firma_valida = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv, pub_verify)
+                    else:
+                        zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv)
                     exito = True
                 except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                     if key_alias and ruta_ks and pwd_ks:
@@ -971,14 +1170,24 @@ def menu_interactivo():
                         historial = ks.obtener_historial_clave_privada(key_alias)
                         for priv_hist in historial:
                             try:
-                                zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
+                                if is_signed:
+                                    firma_valida = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv_hist, pub_verify)
+                                else:
+                                    zch_e2ee.desencriptar_directorio_e2ee_multi(ruta_orig, ruta_dest, priv_hist)
                                 exito = True
                                 break
                             except Exception:
                                 continue
                 if not exito:
                     raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el directorio multi-destinatario (incluso usando historial de claves).")
-                imprimir_exito("Directorio descifrado con éxito.")
+                
+                if is_signed:
+                    if firma_valida:
+                        imprimir_exito("Directorio restaurado y firma digital del emisor VERIFICADA correctamente.")
+                    else:
+                        imprimir_error("Directorio restaurado, pero ¡ALERTA! La firma digital del emisor es INVÁLIDA.")
+                else:
+                    imprimir_exito("Directorio restaurado con éxito.")
             except Exception as e:
                 imprimir_error(f"Fallo al descifrar directorio multi-destinatario: {e}")
                 
@@ -1051,7 +1260,7 @@ def main():
         subparser.add_argument("--kdf-time", type=int, help="Costo de tiempo para Argon2id")
         subparser.add_argument("--kdf-parallel", type=int, help="Paralelismo para Argon2id")
 
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.4 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.5 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -1253,8 +1462,11 @@ def main():
     sub_enc_dir_multi.add_argument("--out-file", required=True, help="Archivo cifrado de salida")
     sub_enc_dir_multi.add_argument("--keys-public", help="Rutas de llaves públicas (.pem) separadas por comas")
     sub_enc_dir_multi.add_argument("--keys-aliases", help="Alias de llaves de contacto en Keystore separados por comas")
-    sub_enc_dir_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias")
+    sub_enc_dir_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias o firma")
     sub_enc_dir_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_enc_dir_multi.add_argument("--sign-private", help="Ruta a llave privada PEM del emisor para firmar")
+    sub_enc_dir_multi.add_argument("--sign-alias", help="Alias de tu llave privada propia en el Keystore para firmar")
+    sub_enc_dir_multi.add_argument("--sign-password", help="Contraseña opcional de la llave privada PEM del emisor")
 
     # decrypt-dir-multi
     sub_dec_dir_multi = subparsers.add_parser("decrypt-dir-multi", help="Descifrar un directorio completo multi-destinatario")
@@ -1263,8 +1475,10 @@ def main():
     sub_dec_dir_multi.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
     sub_dec_dir_multi.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
     sub_dec_dir_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
-    sub_dec_dir_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
+    sub_dec_dir_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias o verificación")
     sub_dec_dir_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_dec_dir_multi.add_argument("--verify-public", help="Ruta a llave pública PEM del emisor para verificar")
+    sub_dec_dir_multi.add_argument("--verify-alias", help="Alias de la llave pública del contacto en el Keystore para verificar")
 
     # encrypt-multi
     sub_enc_multi = subparsers.add_parser("encrypt-multi", help="Cifrar un archivo para múltiples destinatarios")
@@ -1272,8 +1486,11 @@ def main():
     sub_enc_multi.add_argument("--out-file", required=True, help="Archivo cifrado de salida")
     sub_enc_multi.add_argument("--keys-public", help="Rutas de llaves públicas (.pem) separadas por comas")
     sub_enc_multi.add_argument("--keys-aliases", help="Alias de llaves de contacto en Keystore separados por comas")
-    sub_enc_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias")
+    sub_enc_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias o firma")
     sub_enc_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_enc_multi.add_argument("--sign-private", help="Ruta a llave privada PEM del emisor para firmar")
+    sub_enc_multi.add_argument("--sign-alias", help="Alias de tu llave privada propia en el Keystore para firmar")
+    sub_enc_multi.add_argument("--sign-password", help="Contraseña opcional de la llave privada PEM del emisor")
 
     # decrypt-multi
     sub_dec_multi = subparsers.add_parser("decrypt-multi", help="Descifrar un archivo de múltiples destinatarios")
@@ -1282,16 +1499,21 @@ def main():
     sub_dec_multi.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
     sub_dec_multi.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
     sub_dec_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
-    sub_dec_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
+    sub_dec_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias o verificación")
     sub_dec_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_dec_multi.add_argument("--verify-public", help="Ruta a llave pública PEM del emisor para verificar")
+    sub_dec_multi.add_argument("--verify-alias", help="Alias de la llave pública del contacto en el Keystore para verificar")
 
     # encrypt-text-multi
     sub_enc_txt_multi = subparsers.add_parser("encrypt-text-multi", help="Cifrar un texto para múltiples destinatarios")
     sub_enc_txt_multi.add_argument("--text", help="Texto original a cifrar (omitir si se usa --stdin)")
     sub_enc_txt_multi.add_argument("--keys-public", help="Rutas de llaves públicas (.pem) separadas por comas")
     sub_enc_txt_multi.add_argument("--keys-aliases", help="Alias de llaves de contacto en Keystore separados por comas")
-    sub_enc_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias")
+    sub_enc_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usan alias o firma")
     sub_enc_txt_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_enc_txt_multi.add_argument("--sign-private", help="Ruta a llave privada PEM del emisor para firmar")
+    sub_enc_txt_multi.add_argument("--sign-alias", help="Alias de tu llave privada propia en el Keystore para firmar")
+    sub_enc_txt_multi.add_argument("--sign-password", help="Contraseña opcional de la llave privada PEM del emisor")
 
     # decrypt-text-multi
     sub_dec_txt_multi = subparsers.add_parser("decrypt-text-multi", help="Descifrar un texto de múltiples destinatarios")
@@ -1299,8 +1521,10 @@ def main():
     sub_dec_txt_multi.add_argument("--key-private", help="Ruta de tu llave privada (.pem)")
     sub_dec_txt_multi.add_argument("--key-password", help="Contraseña opcional de tu llave privada PEM")
     sub_dec_txt_multi.add_argument("--key-alias", help="Alias de tu llave privada en el Keystore")
-    sub_dec_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias")
+    sub_dec_txt_multi.add_argument("--keystore", help="Ruta del llavero Keystore (.json) si se usa alias o verificación")
     sub_dec_txt_multi.add_argument("--password", help="Contraseña maestra del llavero Keystore")
+    sub_dec_txt_multi.add_argument("--verify-public", help="Ruta a llave pública PEM del emisor para verificar")
+    sub_dec_txt_multi.add_argument("--verify-alias", help="Alias de la llave pública del contacto en el Keystore para verificar")
 
     # ratchet-init
     sub_rat_init = subparsers.add_parser("ratchet-init", help="Inicializar un archivo de sesión Double Ratchet")
@@ -2091,7 +2315,24 @@ def main():
                 imprimir_error("Debe especificar al menos una llave pública válida usando --keys-public o --keys-aliases.", args.json)
                 sys.exit(1)
                 
-            zch_e2ee.encriptar_directorio_e2ee_multi(args.in_dir, args.out_file, llaves_publicas)
+            # Cargar clave de firma
+            priv_sign = None
+            if args.sign_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de firma usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                priv_sign = ks.obtener_clave_privada(args.sign_alias)
+            elif args.sign_private:
+                try:
+                    priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.sign_private, args.sign_password)
+                except Exception:
+                    priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(args.sign_private, args.sign_password)
+
+            if priv_sign:
+                zch_e2ee.encriptar_y_firmar_directorio_e2ee_multi(args.in_dir, args.out_file, llaves_publicas, priv_sign)
+            else:
+                zch_e2ee.encriptar_directorio_e2ee_multi(args.in_dir, args.out_file, llaves_publicas)
             imprimir_exito(f"Directorio cifrado guardado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
         except Exception as e:
             imprimir_error(f"Fallo al cifrar directorio multi-destinatario: {e}", args.json)
@@ -2116,10 +2357,41 @@ def main():
             else:
                 imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
                 sys.exit(1)
+
+            # Cargar clave de verificación
+            pub_verify = None
+            if args.verify_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de verificación usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                pub_verify = ks.obtener_clave_contacto(args.verify_alias)
+            elif args.verify_public:
+                try:
+                    pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.verify_public)
+                except Exception:
+                    pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(args.verify_public)
+
+            # Detectar si está firmado leyendo los primeros 5 bytes
+            is_signed = False
+            try:
+                with open(args.in_file, 'rb') as f:
+                    header_bytes = f.read(5)
+                is_signed = len(header_bytes) == 5 and header_bytes.startswith(b"ZCH\x02") and header_bytes[4] in (0x08, 0x09, 0x0a, 0x0b)
+            except Exception:
+                pass
+
+            if is_signed and not pub_verify:
+                imprimir_error("El directorio cifrado está firmado, pero no se especificó la llave de verificación (--verify-public o --verify-alias).", args.json)
+                sys.exit(1)
                 
             exito = False
+            firma_valida = True
             try:
-                zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv)
+                if is_signed:
+                    firma_valida = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(args.in_file, args.out_dir, priv, pub_verify)
+                else:
+                    zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv)
                 exito = True
             except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                 if args.key_alias and args.keystore and args.password:
@@ -2127,13 +2399,18 @@ def main():
                     historial = ks.obtener_historial_clave_privada(args.key_alias)
                     for priv_hist in historial:
                         try:
-                            zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv_hist)
+                            if is_signed:
+                                firma_valida = zch_e2ee.desencriptar_y_verificar_directorio_e2ee_multi(args.in_file, args.out_dir, priv_hist, pub_verify)
+                            else:
+                                zch_e2ee.desencriptar_directorio_e2ee_multi(args.in_file, args.out_dir, priv_hist)
                             exito = True
                             break
                         except Exception:
                             continue
             if not exito:
                 raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el directorio multi-destinatario (incluso usando historial de claves).")
+            if is_signed and not firma_valida:
+                raise zch_e2ee.ErrorFirma("La firma digital del emisor sobre el directorio es inválida.")
             imprimir_exito(f"Directorio descifrado en '{args.out_dir}'.", args.json, {"out_dir": args.out_dir})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar directorio multi-destinatario: {e}", args.json)
@@ -2167,7 +2444,24 @@ def main():
                 imprimir_error("Debe especificar al menos una llave pública válida usando --keys-public o --keys-aliases.", args.json)
                 sys.exit(1)
                 
-            zch_e2ee.encriptar_archivo_e2ee_multi(args.in_file, args.out_file, llaves_publicas)
+            # Cargar clave de firma
+            priv_sign = None
+            if args.sign_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de firma usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                priv_sign = ks.obtener_clave_privada(args.sign_alias)
+            elif args.sign_private:
+                try:
+                    priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.sign_private, args.sign_password)
+                except Exception:
+                    priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(args.sign_private, args.sign_password)
+
+            if priv_sign:
+                zch_e2ee.encriptar_y_firmar_archivo_e2ee_multi(args.in_file, args.out_file, llaves_publicas, priv_sign)
+            else:
+                zch_e2ee.encriptar_archivo_e2ee_multi(args.in_file, args.out_file, llaves_publicas)
             imprimir_exito(f"Archivo cifrado guardado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
         except Exception as e:
             imprimir_error(f"Fallo al cifrar archivo multi-destinatario: {e}", args.json)
@@ -2192,10 +2486,41 @@ def main():
             else:
                 imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
                 sys.exit(1)
+
+            # Cargar clave de verificación
+            pub_verify = None
+            if args.verify_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de verificación usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                pub_verify = ks.obtener_clave_contacto(args.verify_alias)
+            elif args.verify_public:
+                try:
+                    pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.verify_public)
+                except Exception:
+                    pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(args.verify_public)
+
+            # Detectar si está firmado leyendo los primeros 5 bytes
+            is_signed = False
+            try:
+                with open(args.in_file, 'rb') as f:
+                    header_bytes = f.read(5)
+                is_signed = len(header_bytes) == 5 and header_bytes.startswith(b"ZCH\x02") and header_bytes[4] in (0x08, 0x09, 0x0a, 0x0b)
+            except Exception:
+                pass
+
+            if is_signed and not pub_verify:
+                imprimir_error("El archivo cifrado está firmado, pero no se especificó la llave de verificación (--verify-public o --verify-alias).", args.json)
+                sys.exit(1)
                 
             exito = False
+            firma_valida = True
             try:
-                zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv)
+                if is_signed:
+                    firma_valida = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(args.in_file, args.out_file, priv, pub_verify)
+                else:
+                    zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv)
                 exito = True
             except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                 if args.key_alias and args.keystore and args.password:
@@ -2203,13 +2528,18 @@ def main():
                     historial = ks.obtener_historial_clave_privada(args.key_alias)
                     for priv_hist in historial:
                         try:
-                            zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv_hist)
+                            if is_signed:
+                                firma_valida = zch_e2ee.desencriptar_y_verificar_archivo_e2ee_multi(args.in_file, args.out_file, priv_hist, pub_verify)
+                            else:
+                                zch_e2ee.desencriptar_archivo_e2ee_multi(args.in_file, args.out_file, priv_hist)
                             exito = True
                             break
                         except Exception:
                             continue
             if not exito:
                 raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el archivo multi-destinatario (incluso usando historial de claves).")
+            if is_signed and not firma_valida:
+                raise zch_e2ee.ErrorFirma("La firma digital del emisor sobre el archivo es inválida.")
             imprimir_exito(f"Archivo descifrado en '{args.out_file}'.", args.json, {"out_file": args.out_file})
         except Exception as e:
             imprimir_error(f"Fallo al descifrar archivo multi-destinatario: {e}", args.json)
@@ -2250,7 +2580,25 @@ def main():
                 imprimir_error("Debe especificar al menos una llave pública válida usando --keys-public o --keys-aliases.", args.json)
                 sys.exit(1)
                 
-            cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
+            # Cargar clave de firma
+            priv_sign = None
+            if args.sign_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de firma usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                priv_sign = ks.obtener_clave_privada(args.sign_alias)
+            elif args.sign_private:
+                try:
+                    priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.sign_private, args.sign_password)
+                except Exception:
+                    priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(args.sign_private, args.sign_password)
+
+            if priv_sign:
+                cifrado = zch_e2ee.encriptar_y_firmar_e2ee_multi(texto, llaves_publicas, priv_sign)
+            else:
+                cifrado = zch_e2ee.encriptar_e2ee_multi(texto, llaves_publicas)
+
             if args.json:
                 imprimir_exito("Texto cifrado.", args.json, {"cipher": cifrado})
             else:
@@ -2288,11 +2636,29 @@ def main():
             else:
                 imprimir_error("Debe especificar --key-private o --key-alias para descifrar.", args.json)
                 sys.exit(1)
+
+            # Cargar clave de verificación
+            pub_verify = None
+            if args.verify_alias:
+                if not args.keystore or not args.password:
+                    imprimir_error("Se requiere --keystore y --password para cargar la llave de verificación usando alias.", args.json)
+                    sys.exit(1)
+                ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.password)
+                pub_verify = ks.obtener_clave_contacto(args.verify_alias)
+            elif args.verify_public:
+                try:
+                    pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.verify_public)
+                except Exception:
+                    pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(args.verify_public)
                 
             exito = False
+            firma_valida = True
             descifrado = None
             try:
-                descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
+                if pub_verify:
+                    descifrado, firma_valida = zch_e2ee.desencriptar_y_verificar_e2ee_multi(texto_cifrado, priv, pub_verify)
+                else:
+                    descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv)
                 exito = True
             except (zch_e2ee.ErrorDescifrado, zch_e2ee.CriptoError):
                 if args.key_alias and args.keystore and args.password:
@@ -2300,13 +2666,18 @@ def main():
                     historial = ks.obtener_historial_clave_privada(args.key_alias)
                     for priv_hist in historial:
                         try:
-                            descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
+                            if pub_verify:
+                                descifrado, firma_valida = zch_e2ee.desencriptar_y_verificar_e2ee_multi(texto_cifrado, priv_hist, pub_verify)
+                            else:
+                                descifrado = zch_e2ee.desencriptar_e2ee_multi(texto_cifrado, priv_hist)
                             exito = True
                             break
                         except Exception:
                             continue
             if not exito:
                 raise zch_e2ee.ErrorDescifrado("Fallo al descifrar el texto multi-destinatario (incluso usando historial de claves).")
+            if pub_verify and not firma_valida:
+                raise zch_e2ee.ErrorFirma("La firma digital del emisor sobre el texto es inválida.")
                 
             if args.json:
                 imprimir_exito("Texto descifrado.", args.json, {"plain": descifrado})
