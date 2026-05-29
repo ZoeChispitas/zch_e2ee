@@ -41,7 +41,8 @@ def serializar_sesion_ratchet(sesion):
         "rk_hex": sesion.rk.hex(),
         "ck_send_hex": sesion.ck_send.hex() if sesion.ck_send else None,
         "ck_recv_hex": sesion.ck_recv.hex() if sesion.ck_recv else None,
-        "last_dh_remota_raw": last_dh_remota_raw
+        "last_dh_remota_raw": last_dh_remota_raw,
+        "clave_publica_efimera_esperada_remota_hex": getattr(sesion, "clave_publica_efimera_esperada_remota_hex", None)
     }
 
 def deserializar_sesion_ratchet(data):
@@ -60,6 +61,7 @@ def deserializar_sesion_ratchet(data):
     else:
         sesion.last_dh_remota = None
         
+    sesion.clave_publica_efimera_esperada_remota_hex = data.get("clave_publica_efimera_esperada_remota_hex", None)
     return sesion
 
 def imprimir_exito(mensaje, json_mode=False, data_dict=None):
@@ -80,7 +82,7 @@ def imprimir_error(mensaje, json_mode=False):
 def menu_interactivo():
     while True:
         print("\n" + "=" * 70)
-        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.5)")
+        print(" zch-e2ee — MENÚ CRIPTOGRÁFICO INTERACTIVO (v1.1.6)")
         print("=" * 70)
         print("  1. Generar pares de llaves (RSA, X25519 o Ed25519)")
         print("  2. Cifrar un archivo (Contraseña o Clave Pública)")
@@ -630,6 +632,7 @@ def menu_interactivo():
 
         elif opcion == "15":
             print("\n--- Simulación Interactiva de Double Ratchet ---")
+            firmado = input("¿Deseas habilitar el handshake firmado y autenticado en la simulación? (s/n): ").strip().lower() == "s"
             print("Generando llaves efímeras para Alice y Bob...")
             try:
                 priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
@@ -637,6 +640,32 @@ def menu_interactivo():
                 
                 sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
                 sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+                
+                if firmado:
+                    print("Simulando generación de llaves de firma para Alice...")
+                    priv_firma_alice, pub_firma_alice = zch_e2ee.generar_llaves_ed25519()
+                    
+                    pub_identity_bytes = priv_alice.public_key().public_bytes(
+                        encoding=serialization.Encoding.Raw,
+                        format=serialization.PublicFormat.Raw
+                    )
+                    pub_ephemeral_bytes = sesion_alice.dh_local.public_key().public_bytes(
+                        encoding=serialization.Encoding.Raw,
+                        format=serialization.PublicFormat.Raw
+                    )
+                    datos_a_firmar = pub_identity_bytes + pub_ephemeral_bytes
+                    firma = zch_e2ee._firmar_datos_generico(datos_a_firmar, priv_firma_alice)
+                    
+                    print("Generada firma del handshake por Alice.")
+                    print("Bob verifica la firma del handshake usando la clave pública de Alice...")
+                    
+                    es_valida = zch_e2ee._verificar_firma_datos_generico(datos_a_firmar, firma, pub_firma_alice)
+                    if es_valida:
+                        sesion_bob.clave_publica_efimera_esperada_remota_hex = pub_ephemeral_bytes.hex()
+                        print("Handshake verificado con éxito. Bob ha guardado la clave efímera esperada.")
+                    else:
+                        print("[ERROR] La verificación de la firma falló. No se puede continuar.")
+                        continue
                 
                 print("Sesiones inicializadas correctamente.")
                 while True:
@@ -1260,7 +1289,7 @@ def main():
         subparser.add_argument("--kdf-time", type=int, help="Costo de tiempo para Argon2id")
         subparser.add_argument("--kdf-parallel", type=int, help="Paralelismo para Argon2id")
 
-    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.5 — Herramienta de criptografía de nivel industrial.")
+    parser = argparse.ArgumentParser(description="zch-e2ee CLI v1.1.6 — Herramienta de criptografía de nivel industrial.")
     parser.add_argument("--json", action="store_true", help="Retorna la salida estructurada en formato JSON.")
     parser.add_argument("--stdin", action="store_true", help="Lee los datos del archivo de entrada desde la entrada estándar (piping).")
     parser.add_argument("--stdout", action="store_true", help="Escribe los datos cifrados o descifrados en la salida estándar.")
@@ -1537,6 +1566,13 @@ def main():
     sub_rat_init.add_argument("--key-public-alias", help="Alias de la llave pública del contacto a recuperar del Keystore")
     sub_rat_init.add_argument("--keystore", help="Ruta al Keystore")
     sub_rat_init.add_argument("--keystore-password", help="Contraseña del Keystore")
+    sub_rat_init.add_argument("--sign-private", help="Ruta a llave privada PEM del emisor para firmar el handshake")
+    sub_rat_init.add_argument("--sign-alias", help="Alias de tu llave privada propia en el Keystore para firmar el handshake")
+    sub_rat_init.add_argument("--sign-password", help="Contraseña opcional de la llave privada PEM de firma")
+    sub_rat_init.add_argument("--verify-public", help="Ruta a llave pública PEM del emisor para verificar el handshake")
+    sub_rat_init.add_argument("--verify-alias", help="Alias de la llave pública de contacto en el Keystore para verificar el handshake")
+    sub_rat_init.add_argument("--in-invitation", help="Ruta al archivo JSON de invitación firmado para verificar")
+    sub_rat_init.add_argument("--out-invitation", help="Ruta para exportar el archivo JSON de invitación firmado generado")
 
     # ratchet-encrypt
     sub_rat_enc = subparsers.add_parser("ratchet-encrypt", help="Cifrar mensaje usando una sesión Double Ratchet activa")
@@ -2709,8 +2745,83 @@ def main():
                 sys.exit(1)
             
             sesion = zch_e2ee.SesionDoubleRatchet(priv, pub, args.initiator)
-            state = serializar_sesion_ratchet(sesion)
             
+            # Autenticación de Handshake (Signed Handshake)
+            if args.initiator:
+                priv_sign = None
+                if args.sign_alias:
+                    if not args.keystore or not args.keystore_password:
+                        imprimir_error("Se requiere --keystore y --keystore-password para cargar la llave de firma usando alias.", args.json)
+                        sys.exit(1)
+                    ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                    priv_sign = ks.obtener_clave_privada(args.sign_alias)
+                elif args.sign_private:
+                    try:
+                        priv_sign = zch_e2ee.cargar_llave_privada_ec_desde_archivo(args.sign_private, args.sign_password)
+                    except Exception:
+                        priv_sign = zch_e2ee.cargar_llave_privada_desde_archivo(args.sign_private, args.sign_password)
+                
+                if priv_sign:
+                    pub_identity_bytes = priv.public_key().public_bytes(
+                        encoding=serialization.Encoding.Raw,
+                        format=serialization.PublicFormat.Raw
+                    )
+                    pub_ephemeral_bytes = sesion.dh_local.public_key().public_bytes(
+                        encoding=serialization.Encoding.Raw,
+                        format=serialization.PublicFormat.Raw
+                    )
+                    datos_a_firmar = pub_identity_bytes + pub_ephemeral_bytes
+                    firma = zch_e2ee._firmar_datos_generico(datos_a_firmar, priv_sign)
+                    
+                    invitation = {
+                        "identity_key": pub_identity_bytes.hex(),
+                        "ephemeral_key": pub_ephemeral_bytes.hex(),
+                        "signature": base64.b64encode(firma).decode('utf-8')
+                    }
+                    if args.out_invitation:
+                        with open(args.out_invitation, 'w', encoding='utf-8') as f:
+                            json.dump(invitation, f, indent=2)
+            else:
+                if args.in_invitation:
+                    pub_verify = None
+                    if args.verify_alias:
+                        if not args.keystore or not args.keystore_password:
+                            imprimir_error("Se requiere --keystore y --keystore-password para cargar la llave de verificación usando alias.", args.json)
+                            sys.exit(1)
+                        ks = zch_e2ee.KeystoreZCH.cargar(args.keystore, args.keystore_password)
+                        pub_verify = ks.obtener_clave_contacto(args.verify_alias)
+                    elif args.verify_public:
+                        try:
+                            pub_verify = zch_e2ee.cargar_llave_publica_ec_desde_archivo(args.verify_public)
+                        except Exception:
+                            pub_verify = zch_e2ee.cargar_llave_publica_desde_archivo(args.verify_public)
+                    
+                    if not pub_verify:
+                        imprimir_error("Se requiere --verify-public o --verify-alias para validar el handshake en la invitación.", args.json)
+                        sys.exit(1)
+                        
+                    with open(args.in_invitation, 'r', encoding='utf-8') as f:
+                        invitation = json.load(f)
+                        
+                    expected_identity_bytes = pub.public_bytes(
+                        encoding=serialization.Encoding.Raw,
+                        format=serialization.PublicFormat.Raw
+                    )
+                    if invitation["identity_key"] != expected_identity_bytes.hex():
+                        raise zch_e2ee.ErrorClave("La clave de identidad de la invitación no coincide con la llave pública del emisor.")
+                        
+                    pub_identity_bytes = bytes.fromhex(invitation["identity_key"])
+                    pub_ephemeral_bytes = bytes.fromhex(invitation["ephemeral_key"])
+                    datos_a_verificar = pub_identity_bytes + pub_ephemeral_bytes
+                    firma = base64.b64decode(invitation["signature"].encode('utf-8'))
+                    
+                    es_valida = zch_e2ee._verificar_firma_datos_generico(datos_a_verificar, firma, pub_verify)
+                    if not es_valida:
+                        raise zch_e2ee.ErrorFirma("La firma digital del handshake es inválida.")
+                        
+                    sesion.clave_publica_efimera_esperada_remota_hex = invitation["ephemeral_key"]
+            
+            state = serializar_sesion_ratchet(sesion)
             with open(args.out_session, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=2)
                 

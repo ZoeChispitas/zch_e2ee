@@ -81,6 +81,8 @@ from .zch_e2ee import (
     calcular_sha256,
     firmar_archivo,
     verificar_firma_archivo,
+    _firmar_datos_generico,
+    _verificar_firma_datos_generico,
     
     # Criptografía de Umbral (Shamir)
     dividir_secreto_shamir,

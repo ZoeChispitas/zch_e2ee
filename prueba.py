@@ -2390,9 +2390,237 @@ def test_nuevas_caracteristicas_v115():
 
     print("  [OK] Pruebas de nuevas caracteristicas v1.1.5 completadas con exito.")
 
+def test_nuevas_caracteristicas_v116():
+    print("\n--- TEST: Nuevas Caracteristicas v1.1.6 (Handshake Autenticado y Firmado) ---")
+    
+    # 1. Prueba Programática: Inicializar Double Ratchet signed handshake
+    priv_alice, pub_alice = zch_e2ee.generar_llaves_ec()
+    priv_bob, pub_bob = zch_e2ee.generar_llaves_ec()
+    
+    sesion_alice = zch_e2ee.SesionDoubleRatchet(priv_alice, pub_bob, es_iniciador=True)
+    sesion_bob = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+    
+    priv_firma_alice, pub_firma_alice = zch_e2ee.generar_llaves_ed25519()
+    pub_identity_alice_bytes = priv_alice.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+    pub_ephemeral_alice_bytes = sesion_alice.dh_local.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+    datos_a_firmar = pub_identity_alice_bytes + pub_ephemeral_alice_bytes
+    firma = zch_e2ee._firmar_datos_generico(datos_a_firmar, priv_firma_alice)
+    
+    es_valida = zch_e2ee._verificar_firma_datos_generico(datos_a_firmar, firma, pub_firma_alice)
+    assert es_valida, "La firma del handshake deberia ser valida."
+    
+    sesion_bob.clave_publica_efimera_esperada_remota_hex = pub_ephemeral_alice_bytes.hex()
+    
+    msg = "Mensaje con handshake firmado"
+    cifrado = sesion_alice.enviar_mensaje(msg)
+    descifrado = sesion_bob.recibir_mensaje(cifrado)
+    assert descifrado == msg, "El descifrado deberia ser exitoso."
+    assert sesion_bob.clave_publica_efimera_esperada_remota_hex is None, "La clave efimera esperada debio limpiarse tras recibir el primer mensaje."
+    
+    # 2. Prueba de Rechazo Programático: Firma corrupta y clave efímera inesperada
+    firma_corrupta = bytearray(firma)
+    firma_corrupta[0] ^= 0xFF
+    es_valida_corrupta = zch_e2ee._verificar_firma_datos_generico(datos_a_firmar, bytes(firma_corrupta), pub_firma_alice)
+    assert not es_valida_corrupta, "La firma corrupta deberia ser invalida."
+    
+    sesion_bob_error = zch_e2ee.SesionDoubleRatchet(priv_bob, pub_alice, es_iniciador=False)
+    sesion_bob_error.clave_publica_efimera_esperada_remota_hex = "a" * 64
+    cifrado2 = sesion_alice.enviar_mensaje("Mensaje fallido")
+    try:
+        sesion_bob_error.recibir_mensaje(cifrado2)
+        assert False, "Deberia lanzar ErrorFirma por clave efimera inesperada."
+    except zch_e2ee.ErrorFirma:
+        pass
+        
+    print("    [OK] Pruebas programaticas del handshake firmado pasaron.")
+
+    # 3. CLI signed handshake tests
+    temp_alice_priv = "temp_v116_alice_priv.pem"
+    temp_alice_pub = "temp_v116_alice_pub.pem"
+    temp_bob_priv = "temp_v116_bob_priv.pem"
+    temp_bob_pub = "temp_v116_bob_pub.pem"
+    temp_alice_sign_priv = "temp_v116_alice_sign_priv.pem"
+    temp_alice_sign_pub = "temp_v116_alice_sign_pub.pem"
+    
+    temp_alice_ses = "temp_v116_alice_ses.json"
+    temp_bob_ses = "temp_v116_bob_ses.json"
+    temp_invitation = "temp_v116_invitation.json"
+    temp_invitation_corrupt = "temp_v116_invitation_corrupt.json"
+    temp_invitation_altered = "temp_v116_invitation_altered.json"
+    temp_invitation_ks = "temp_v116_invitation_ks.json"
+    ruta_ks = "temp_v116_ks.json"
+    temp_alice_ses_ks = "temp_v116_alice_ses_ks.json"
+    temp_bob_ses_ks = "temp_v116_bob_ses_ks.json"
+    
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_alice, temp_alice_priv)
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_alice, temp_alice_pub)
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_bob, temp_bob_priv)
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_bob, temp_bob_pub)
+    zch_e2ee.guardar_llave_privada_ec_en_archivo(priv_firma_alice, temp_alice_sign_priv)
+    zch_e2ee.guardar_llave_publica_ec_en_archivo(pub_firma_alice, temp_alice_sign_pub)
+    
+    env_dict = os.environ.copy()
+    env_dict["PYTHONPATH"] = os.path.abspath("src")
+    
+    try:
+        # A. CLI ratchet-init: Alice (iniciador, firma el handshake)
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--initiator",
+            "--key-private", temp_alice_priv,
+            "--key-public", temp_bob_pub,
+            "--out-session", temp_alice_ses,
+            "--sign-private", temp_alice_sign_priv,
+            "--out-invitation", temp_invitation
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        # B. CLI ratchet-init: Bob (receptor, verifica la invitación)
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private", temp_bob_priv,
+            "--key-public", temp_alice_pub,
+            "--out-session", temp_bob_ses,
+            "--verify-public", temp_alice_sign_pub,
+            "--in-invitation", temp_invitation
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        # C. Intercambio de mensajes CLI
+        msg_cli = "Prueba de Double Ratchet firmado CLI"
+        res_enc = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-encrypt",
+            "--session", temp_alice_ses,
+            "--out-session", temp_alice_ses,
+            "--text", msg_cli
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cipher_cli = json.loads(res_enc.stdout)["cipher"]
+        
+        res_dec = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-decrypt",
+            "--session", temp_bob_ses,
+            "--out-session", temp_bob_ses,
+            "--text", cipher_cli
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res_dec.stdout)["plain"] == msg_cli
+        
+        # D. CLI handshake rejection: Invitación alterada (firma corrupta)
+        with open(temp_invitation, "r", encoding="utf-8") as f:
+            inv_data = json.load(f)
+        
+        inv_data_corrupt = inv_data.copy()
+        inv_data_corrupt["signature"] = base64.b64encode(b"firma_totalmente_invalida").decode('utf-8')
+        
+        with open(temp_invitation_corrupt, "w", encoding="utf-8") as f:
+            json.dump(inv_data_corrupt, f)
+            
+        res_init_corrupt = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private", temp_bob_priv,
+            "--key-public", temp_alice_pub,
+            "--out-session", temp_bob_ses,
+            "--verify-public", temp_alice_sign_pub,
+            "--in-invitation", temp_invitation_corrupt
+        ], env=env_dict, capture_output=True, text=True)
+        assert res_init_corrupt.returncode != 0, "Deberia fallar ratchet-init con firma corrupta."
+        
+        # E. CLI handshake rejection: Clave efímera alterada en la invitación
+        inv_data_altered_key = inv_data.copy()
+        orig_key = inv_data_altered_key["ephemeral_key"]
+        new_char = '1' if orig_key[0] != '1' else '2'
+        inv_data_altered_key["ephemeral_key"] = new_char + orig_key[1:]
+        
+        with open(temp_invitation_altered, "w", encoding="utf-8") as f:
+            json.dump(inv_data_altered_key, f)
+            
+        res_init_altered = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private", temp_bob_priv,
+            "--key-public", temp_alice_pub,
+            "--out-session", temp_bob_ses,
+            "--verify-public", temp_alice_sign_pub,
+            "--in-invitation", temp_invitation_altered
+        ], env=env_dict, capture_output=True, text=True)
+        assert res_init_altered.returncode != 0, "Deberia fallar ratchet-init con clave efimera alterada."
+        
+        print("    [OK] Pruebas de CLI ratchet-init firmado pasaron.")
+        
+        # F. Keystore-based signed initialization
+        pwd_ks = "KeystorePasswordV116!"
+        
+        ks = zch_e2ee.KeystoreZCH.crear(ruta_ks, pwd_ks)
+        ks.guardar_clave_propia("alice_priv", priv_alice)
+        ks.guardar_clave_contacto("alice_pub_alias", pub_alice)
+        ks.guardar_clave_propia("bob_priv", priv_bob)
+        ks.guardar_clave_contacto("bob_pub_alias", pub_bob)
+        ks.guardar_clave_propia("alice_sign_priv_alias", priv_firma_alice)
+        ks.guardar_clave_contacto("alice_sign_pub_alias", pub_firma_alice)
+        ks.guardar(ruta_ks, pwd_ks)
+        
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--initiator",
+            "--key-private-alias", "alice_priv",
+            "--key-public-alias", "bob_pub_alias",
+            "--out-session", temp_alice_ses_ks,
+            "--sign-alias", "alice_sign_priv_alias",
+            "--out-invitation", temp_invitation_ks,
+            "--keystore", ruta_ks,
+            "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-init",
+            "--key-private-alias", "bob_priv",
+            "--key-public-alias", "alice_pub_alias",
+            "--out-session", temp_bob_ses_ks,
+            "--verify-alias", "alice_sign_pub_alias",
+            "--in-invitation", temp_invitation_ks,
+            "--keystore", ruta_ks,
+            "--keystore-password", pwd_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        
+        res_enc_ks = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-encrypt",
+            "--session", temp_alice_ses_ks,
+            "--out-session", temp_alice_ses_ks,
+            "--text", "Mensaje Keystore"
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        cipher_ks = json.loads(res_enc_ks.stdout)["cipher"]
+        
+        res_dec_ks = subprocess.run([
+            sys.executable, "-m", "zch_e2ee", "--json", "ratchet-decrypt",
+            "--session", temp_bob_ses_ks,
+            "--out-session", temp_bob_ses_ks,
+            "--text", cipher_ks
+        ], env=env_dict, capture_output=True, text=True, check=True)
+        assert json.loads(res_dec_ks.stdout)["plain"] == "Mensaje Keystore"
+        
+        print("    [OK] Pruebas de Keystore con handshake firmado pasaron.")
+        
+    finally:
+        temp_files = [
+            temp_alice_priv, temp_alice_pub, temp_bob_priv, temp_bob_pub,
+            temp_alice_sign_priv, temp_alice_sign_pub, temp_alice_ses, temp_bob_ses,
+            temp_invitation, temp_invitation_corrupt, temp_invitation_altered,
+            temp_invitation_ks, ruta_ks, temp_alice_ses_ks, temp_bob_ses_ks
+        ]
+        for f in temp_files:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+                    
+    print("  [OK] Pruebas de nuevas caracteristicas v1.1.6 completadas con exito.")
+
 def main():
     print("=" * 75)
-    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.5")
+    print(" PRUEBAS UNITARIAS DE SISTEMA - zch_e2ee v1.1.6")
     print("=" * 75)
     
     try:
@@ -2463,7 +2691,10 @@ def main():
         # Tests v1.1.5
         test_nuevas_caracteristicas_v115()
         
-        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.5 PASARON EXITOSAMENTE!")
+        # Tests v1.1.6
+        test_nuevas_caracteristicas_v116()
+        
+        print("\n[OK] ¡TODOS LOS TESTS DE LA V1.1.6 PASARON EXITOSAMENTE!")
     except AssertionError as e:
         import traceback
         traceback.print_exc()

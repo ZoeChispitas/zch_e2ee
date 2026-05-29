@@ -2508,6 +2508,7 @@ class SesionDoubleRatchet:
         self.es_iniciador = es_iniciador
         self.dh_local = x25519.X25519PrivateKey.generate()
         self.rk = derivar_clave_compartida(self.dhp, self.dhr)
+        self.clave_publica_efimera_esperada_remota_hex = None
         
         if es_iniciador:
             self.info_send = b'zch-e2ee ck Alice to Bob'
@@ -2577,6 +2578,11 @@ class SesionDoubleRatchet:
         paquete = base64.b64decode(payload_b64.encode('utf-8'))
         
         pub_remota_bytes = paquete[:32]
+        if getattr(self, "clave_publica_efimera_esperada_remota_hex", None):
+            if pub_remota_bytes != bytes.fromhex(self.clave_publica_efimera_esperada_remota_hex):
+                raise ErrorFirma("La clave publica efimera remota en el primer mensaje no coincide con la clave firmada en el handshake.")
+            self.clave_publica_efimera_esperada_remota_hex = None
+            
         nonce = paquete[32 : 32 + 12]
         cifrado = paquete[32 + 12:]
         
